@@ -55,6 +55,14 @@ $errorCount = 0
 $errorDetails = @()
 $processedCount = 0
 $skippedCount = 0
+    
+# データ同期処理結果を保持する変数
+$syncAddedCount = 0
+$syncUpdatedCount = 0
+$syncDeletedCount = 0
+
+# 処理されたファイル名を保持する配列
+$processedFiles = @()
 
 # 全Excelデータを蓄積する配列
 $allExcelData = @()
@@ -133,6 +141,7 @@ try {
             # 処理成功後、タイムスタンプを更新
             Update-FileTimestamp -FilePath $xlsPath -Timestamps ([ref]$timestamps) -Verbose
             $processedCount++
+            $processedFiles += $fileName
             
             # 変換した.xlsxファイルを削除（必要に応じてコメントアウト）
             # Remove-Item $xlsxPath -Force
@@ -164,7 +173,10 @@ try {
                 -TimeoutSec $Config.Api.TimeoutSec
             
             if ($syncResult.Success) {
-                Write-Log -Message "データ同期処理完了（追加: $($syncResult.AddedCount), 更新: $($syncResult.UpdatedCount), 削除: $($syncResult.DeletedCount)）" -LogPath $logPath -LogLevel "INFO"
+                # データ同期処理結果を保持
+                $syncAddedCount = $syncResult.AddedCount
+                $syncUpdatedCount = $syncResult.UpdatedCount
+                $syncDeletedCount = $syncResult.DeletedCount
             }
             else {
                 $errorCount += $syncResult.ErrorCount
@@ -195,8 +207,16 @@ try {
         }
     }
     
-    # 処理完了ログ
-    Write-Log -Message "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)）" -LogPath $logPath -LogLevel "INFO"
+    # 処理完了ログ（データ同期処理結果も含める）
+    $syncInfo = ""
+    if ($allExcelData.Count -gt 0) {
+        $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 削除: $syncDeletedCount 件"
+    }
+    $filesInfo = ""
+    if ($processedFiles.Count -gt 0) {
+        $filesInfo = ", 更新ファイル: $($processedFiles -join ', ')"
+    }
+    Write-Log -Message "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）" -LogPath $logPath -LogLevel "INFO"
     
     # エラーが発生した場合はメール送信
     if ($errorCount -gt 0) {

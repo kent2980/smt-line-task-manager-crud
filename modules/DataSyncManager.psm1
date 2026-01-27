@@ -88,10 +88,7 @@ function Sync-DataWithApi {
     }
     
     try {
-        Write-Log -Message "=== データ同期処理開始 ===" -LogPath $LogPath -LogLevel "INFO"
-        
         # ステップ1: 更新元データ取得
-        Write-Log -Message "更新元データ取得: $($SourceData.Count) 件" -LogPath $LogPath -LogLevel "INFO"
         if ($null -eq $SourceData -or $SourceData.Count -eq 0) {
             $errorMsg = "更新元データが空です"
             Write-Log -Message $errorMsg -LogPath $LogPath -LogLevel "ERROR"
@@ -101,7 +98,6 @@ function Sync-DataWithApi {
         }
         
         # ステップ2: 更新先データ取得（API GET、500件単位）
-        Write-Log -Message "更新先データ取得開始（バッチサイズ: $GetBatchSize）" -LogPath $LogPath -LogLevel "INFO"
         try {
             $targetData = Get-TargetDataFromApi -ApiUri $ApiUri -ApiHeaders $ApiHeaders -AppId $AppId -TimeoutSec $TimeoutSec -BatchSize $GetBatchSize -LogPath $LogPath
             
@@ -281,27 +277,10 @@ function Get-TargetDataFromApi {
             $bodyJson = $bodyObject | ConvertTo-Json -Depth 10
             
             Write-Verbose "API GET リクエスト送信（offset: $offset, limit: $BatchSize）"
-            Write-Log -Message "API GET リクエスト送信（offset: $offset, limit: $BatchSize）" -LogPath $LogPath -LogLevel "INFO"
             
             $response = Get-ApiData -Uri $ApiUri -Method "GET" -Body $bodyJson -Headers $ApiHeaders -TimeoutSec $TimeoutSec -Verbose
 
-            # デバッグ: レスポンスの構造を確認
-            $responseType = if ($response) { $response.GetType().FullName } else { "null" }
-            Write-Log -Message "レスポンスの型: $responseType" -LogPath $LogPath -LogLevel "INFO"
-            Write-Host "DEBUG: レスポンスの型: $responseType"
-            
             if ($null -ne $response) {
-                # レスポンスの内容をログに出力（最初の1000文字まで）
-                try {
-                    $responseJson = $response | ConvertTo-Json -Depth 3 -Compress
-                    if ($responseJson.Length -gt 1000) {
-                        $responseJson = $responseJson.Substring(0, 1000) + "..."
-                    }
-                    Write-Log -Message "レスポンスの内容（最初の1000文字）: $responseJson" -LogPath $LogPath -LogLevel "INFO"
-                }
-                catch {
-                    Write-Log -Message "レスポンスのJSON変換に失敗: $_" -LogPath $LogPath -LogLevel "WARNING"
-                }
                 
                 # プロパティ名を確認（ログ出力なし）
                 # レスポンスが配列の場合（直接records配列が返される場合）
