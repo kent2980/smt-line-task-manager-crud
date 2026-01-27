@@ -111,22 +111,18 @@ try {
                 continue
             }
             
-            Write-Log -Message "ファイル更新を検出: $fileName" -LogPath $logPath -LogLevel "INFO"
             
             # ステップ1: DataDirectory → DataDirectoryTemp にコピー
             Write-Host "  [1/4] DataDirectory → DataDirectoryTemp にコピー中..."
             Copy-Item -Path $xlsPath -Destination $xlsPathTemp -Force
-            Write-Log -Message "コピー完了: $xlsPathTemp" -LogPath $logPath -LogLevel "INFO"
             
             # ステップ2: DataDirectoryTemp → DataDirectoryXlsx に変換（.xls → .xlsx）
             Write-Host "  [2/4] .xls → .xlsx 変換中..."
             $xlsxPath = Convert-XlsToXlsx -XlsPath $xlsPathTemp -XlsxPath $xlsxPath -Verbose
-            Write-Log -Message "変換完了: $xlsxPath" -LogPath $logPath -LogLevel "INFO"
             
             # ステップ3: Excelファイルを読み取り
             Write-Host "  [3/4] Excelファイル読み取り中..."
             $excelData = Read-ExcelData -XlsxPath $xlsxPath -Verbose
-            Write-Log -Message "Excel読み取り完了" -LogPath $logPath -LogLevel "INFO"
             
             # 読み込んだデータを全データ配列に追加
             if ($excelData -and $excelData.Count -gt 0) {
@@ -156,7 +152,6 @@ try {
     # ステップ4: データ同期処理（追加・更新・削除）
     if ($allExcelData.Count -gt 0) {
         Write-Host "`n[4/4] データ同期処理開始（総件数: $($allExcelData.Count)）..."
-        Write-Log -Message "データ同期処理開始（総件数: $($allExcelData.Count)）" -LogPath $logPath -LogLevel "INFO"
         
         try {
             # DataSyncManagerモジュールを使用してデータ同期を実行
