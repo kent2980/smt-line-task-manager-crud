@@ -1,0 +1,20 @@
+# 機密情報を含むファイル
+.env
+
+# 一時ファイル
+*.json
+!package.json
+updateRecords.json
+jsonData.json
+targetItem.json
+
+# ログファイル
+*.log
+
+# PowerShell一時ファイル
+*.ps1.bak
+
+# OS固有ファイル
+.DS_Store
+Thumbs.db
+
