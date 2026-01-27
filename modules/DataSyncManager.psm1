@@ -12,6 +12,9 @@ function Sync-DataWithApi {
     
     .PARAMETER SourceData
     更新元データ（Excelから読み込んだデータ配列）
+
+    .PARAMETER processedLineNames
+    処理済みライン名の配列
     
     .PARAMETER ApiUri
     APIエンドポイントURL
@@ -47,6 +50,9 @@ function Sync-DataWithApi {
     param(
         [Parameter(Mandatory = $true)]
         [array]$SourceData,
+        
+        [Parameter(Mandatory = $true)]
+        [array]$processedLineNames,
         
         [Parameter(Mandatory = $true)]
         [string]$ApiUri,
@@ -103,7 +109,6 @@ function Sync-DataWithApi {
             
             # nullの場合は空の配列として扱う（0件として処理）
             if ($null -eq $targetData) {
-                Write-Log -Message "更新先データがnullでした。空の配列として扱います（0件）" -LogPath $LogPath -LogLevel "INFO"
                 $targetData = @()
             }
         }
@@ -123,7 +128,7 @@ function Sync-DataWithApi {
         }
         
         # ステップ3: ライン_ロットナンバーで突合
-        $comparisonResult = Compare-DataByLineLotNumber -SourceData $SourceData -TargetData $targetRecords -LogPath $LogPath
+        $comparisonResult = Compare-DataByLineLotNumber -SourceData $SourceData -processedLineNames $processedLineNames -TargetData $targetRecords -LogPath $LogPath
         
         # ステップ4: 追加処理（API POST、100件単位）
         if ($comparisonResult.ToAdd.Count -gt 0) {
@@ -143,7 +148,6 @@ function Sync-DataWithApi {
             }
             
             $result.AddedCount = $addResult.ProcessedCount
-            Write-Log -Message "追加処理完了: $($result.AddedCount) 件" -LogPath $LogPath -LogLevel "INFO"
         }
         
         # ステップ5: 更新処理（API PUT、100件単位・全項目）
@@ -174,7 +178,6 @@ function Sync-DataWithApi {
         
         # ステップ6: 削除処理（API DELETE、100件単位）
         if ($comparisonResult.ToDelete.Count -gt 0) {
-            Write-Log -Message "削除処理開始: $($comparisonResult.ToDelete.Count) 件" -LogPath $LogPath -LogLevel "INFO"
             $deleteResult = Invoke-DeleteData -DataToDelete $comparisonResult.ToDelete -ApiUri $ApiUri -ApiHeaders $ApiHeaders -AppId $AppId -TimeoutSec $TimeoutSec -BatchSize $DeleteBatchSize -LogPath $LogPath
             
             if (-not $deleteResult.Success) {
@@ -204,7 +207,6 @@ function Sync-DataWithApi {
             }
             
             $result.DeletedCount = $deleteResult.ProcessedCount
-            Write-Log -Message "削除処理完了: $($result.DeletedCount) 件" -LogPath $LogPath -LogLevel "INFO"
         }
         
         # 全処理成功
@@ -291,7 +293,6 @@ function Get-TargetDataFromApi {
                         break
                     }
                     else {
-                        Write-Log -Message "レスポンスが空の配列です" -LogPath $LogPath -LogLevel "INFO"
                         break
                     }
                 }
@@ -311,7 +312,6 @@ function Get-TargetDataFromApi {
                         $offset += $BatchSize
                     }
                     else {
-                        Write-Log -Message "recordsが空です" -LogPath $LogPath -LogLevel "INFO"
                         break
                     }
                 }
@@ -334,26 +334,22 @@ function Get-TargetDataFromApi {
         
         # 空の配列でも正常に返す（データが存在しないだけ）
         if ($allRecords.Count -eq 0) {
-            Write-Log -Message "取得したデータが0件です（これは正常な場合があります）" -LogPath $LogPath -LogLevel "INFO"
         }
         
         # 確実に配列を返す（nullの場合は空の配列を返す）
         # $allRecordsは初期化時に@()で設定されているので、nullになることはないはずだが、念のためチェック
         if ($null -eq $allRecords) {
             Write-Log -Message "警告: allRecordsがnullです。空の配列を返します。" -LogPath $LogPath -LogLevel "WARNING"
-            Write-Host "DEBUG: allRecordsがnullです。空の配列を返します。"
             $allRecords = @()
         }
         
         # 返り値が確実に配列であることを確認
         if ($allRecords -isnot [System.Array]) {
             Write-Log -Message "警告: allRecordsが配列ではありません。型: $($allRecords.GetType().FullName)" -LogPath $LogPath -LogLevel "WARNING"
-            Write-Host "DEBUG: allRecordsが配列ではありません。型: $($allRecords.GetType().FullName)"
             # 配列に変換
             $allRecords = @($allRecords)
         }
         
-        Write-Host "DEBUG: Get-TargetDataFromApi終了 - 返り値: 型=$($allRecords.GetType().FullName), 件数=$($allRecords.Count)"
         return $allRecords
     }
     catch {
@@ -373,6 +369,10 @@ function Compare-DataByLineLotNumber {
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
         [array]$SourceData,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [array]$processedLineNames,
         
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
@@ -435,8 +435,12 @@ function Compare-DataByLineLotNumber {
         # 削除対象（更新先のみ存在）
         $toDelete = @()
         foreach ($key in $targetKeys.Keys) {
-            if (-not $sourceKeys.ContainsKey($key)) {
-                $toDelete += $targetKeys[$key]
+            # 処理済みライン名に含まれている場合は削除対象に追加
+            if ($processedLineNames.Contains($key)) {
+                # データが更新元に存在しない場合は削除対象に追加
+                if (-not $sourceKeys.ContainsKey($key)) {
+                    $toDelete += $targetKeys[$key]
+                }
             }
         }
         
@@ -500,7 +504,6 @@ function Invoke-AddData {
             $batchData = $DataToAdd[$startIndex..$endIndex]
             $batchNumber = $batchIndex + 1
             
-            Write-Log -Message "追加処理 バッチ $batchNumber / $totalBatches（$($batchData.Count) 件）" -LogPath $LogPath -LogLevel "INFO"
             
             try {
                 # JSON変換
@@ -517,7 +520,6 @@ function Invoke-AddData {
                 
                 $result.ProcessedCount += $batchData.Count
                 $result.ProcessedData += $batchData
-                Write-Log -Message "追加処理 バッチ $batchNumber 成功（$($batchData.Count) 件）" -LogPath $LogPath -LogLevel "INFO"
             }
             catch {
                 $errorMsg = "追加処理 バッチ $batchNumber エラー: $_"
@@ -576,7 +578,6 @@ function Invoke-UpdateData {
 
     
     try {
-        Write-Host "host01"
         # 更新対象データを準備（キントーンAPIのPUT形式に変換）
         $updateRecords = @()
         foreach ($item in $DataToUpdate) {
@@ -587,7 +588,6 @@ function Invoke-UpdateData {
             $recordId = $null
             if ($targetItem.PSObject.Properties['line_lot_number']) {
                 $idProp = $targetItem.PSObject.Properties['line_lot_number']
-                Write-Host $idProp
                 $recordId = if ($idProp.Value.value) { $idProp.Value.value } else { $idProp.Value }
             }
             
@@ -732,8 +732,7 @@ function Invoke-DeleteData {
             $endIndex = [Math]::Min($startIndex + $BatchSize - 1, $recordIds.Count - 1)
             $batchIds = $recordIds[$startIndex..$endIndex]
             $batchNumber = $batchIndex + 1
-            
-            Write-Log -Message "削除処理 バッチ $batchNumber / $totalBatches（$($batchIds.Count) 件）" -LogPath $LogPath -LogLevel "INFO"
+        
             
             try {
                 # キントーンAPIのDELETE形式
@@ -754,7 +753,6 @@ function Invoke-DeleteData {
                 
                 $result.ProcessedCount += $batchIds.Count
                 $result.ProcessedData += $DataToDelete[$startIndex..$endIndex]
-                Write-Log -Message "削除処理 バッチ $batchNumber 成功（$($batchIds.Count) 件）" -LogPath $LogPath -LogLevel "INFO"
             }
             catch {
                 $errorMsg = "削除処理 バッチ $batchNumber エラー: $_"

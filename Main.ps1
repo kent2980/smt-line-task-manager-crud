@@ -64,6 +64,9 @@ $syncDeletedCount = 0
 # 処理されたファイル名を保持する配列
 $processedFiles = @()
 
+# 処理されたライン名を保持する配列
+$processedLineNames = @()
+
 # 全Excelデータを蓄積する配列
 $allExcelData = @()
 
@@ -142,6 +145,7 @@ try {
             Update-FileTimestamp -FilePath $xlsPath -Timestamps ([ref]$timestamps) -Verbose
             $processedCount++
             $processedFiles += $fileName
+            $processedLineNames += $fileName.Split('.')[0]
             
             # 変換した.xlsxファイルを削除（必要に応じてコメントアウト）
             # Remove-Item $xlsxPath -Force
@@ -166,6 +170,7 @@ try {
             # DataSyncManagerモジュールを使用してデータ同期を実行
             $syncResult = Sync-DataWithApi `
                 -SourceData $allExcelData `
+                -processedLineNames $processedLineNames `
                 -ApiUri $Config.Api.Uri `
                 -ApiHeaders $Config.Api.Headers `
                 -AppId $Config.AppId `
@@ -217,6 +222,7 @@ try {
         $filesInfo = ", 更新ファイル: $($processedFiles -join ', ')"
     }
     Write-Log -Message "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）" -LogPath $logPath -LogLevel "INFO"
+    Write-Host "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）"
     
     # エラーが発生した場合はメール送信
     if ($errorCount -gt 0) {
