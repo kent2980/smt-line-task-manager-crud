@@ -630,8 +630,9 @@ function Invoke-UpdateData {
             try {
                 # JSON変換
                 $resultObject = @{
-                    app     = $AppId
-                    records = $batchData
+                    app       = $AppId
+                    records   = $batchData
+                    revisions = @(1, 4)
                 }
                 $jsonData = $resultObject | ConvertTo-Json -Depth 20
                 # $jsonDataをjsonファイルに出力
@@ -737,8 +738,9 @@ function Invoke-DeleteData {
             try {
                 # キントーンAPIのDELETE形式
                 $bodyObject = @{
-                    app = $AppId
-                    ids = $batchIds
+                    app       = $AppId
+                    ids       = $batchIds
+                    revisions = @(1, 4)
                 }
                 $jsonData = $bodyObject | ConvertTo-Json -Depth 10
                 

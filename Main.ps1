@@ -147,8 +147,6 @@ try {
             $processedFiles += $fileName
             $processedLineNames += $fileName.Split('.')[0]
             
-            # 変換した.xlsxファイルを削除（必要に応じてコメントアウト）
-            # Remove-Item $xlsxPath -Force
         }
         catch {
             $errorMessage = "ファイル処理エラー ($fileName): $_"

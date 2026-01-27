@@ -116,8 +116,9 @@ function ConvertTo-JsonData {
         }
         
         $result = @{
-            app     = $AppId
-            records = $wrappedRecords
+            app       = $AppId
+            records   = $wrappedRecords
+            revisions = @(1, 4)
         }
         
         $params = @{
