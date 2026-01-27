@@ -33,6 +33,9 @@ if (Test-Path $envFilePath) {
     }
 }
 
+# データディレクトリ
+$DataDirectoryTemp = if ($envVars['DATA_DIRECTORY_TEMP']) { $envVars['DATA_DIRECTORY_TEMP'] } else { throw "DATA_DIRECTORY_TEMPが.envファイルに設定されていません" }
+
 # ファイルパス設定
 $Config = @{
 
@@ -46,19 +49,18 @@ $Config = @{
 
     # 一時ディレクトリ
     # .envファイルから読み込む（必須）
-    DataDirectoryTemp   = if ($envVars['DATA_DIRECTORY_TEMP']) { $envVars['DATA_DIRECTORY_TEMP'] } else { throw "DATA_DIRECTORY_TEMPが.envファイルに設定されていません" }
+    DataDirectoryTemp   = $DataDirectoryTemp
 
-    # 変換後のディレクトリ
-    # .envファイルから読み込む（必須）
-    DataDirectoryXlsx   = if ($envVars['DATA_DIRECTORY_XLSX']) { $envVars['DATA_DIRECTORY_XLSX'] } else { throw "DATA_DIRECTORY_XLSXが.envファイルに設定されていません" }
+    # 変換後のディレクトリ (DataDirectoryTemp/xlsx/)
+    DataDirectoryXlsx   = Join-Path $DataDirectoryTemp "xlsx\"
     
     # ログディレクトリ
-    # .envファイルから読み込む（必須）
-    LogDirectory        = if ($envVars['LOG_DIRECTORY']) { $envVars['LOG_DIRECTORY'] } else { throw "LOG_DIRECTORYが.envファイルに設定されていません" }
+    # .envファイルから読み込む (DataDirectory/log/) 
+    LogDirectory        = Join-Path $DataDirectoryTemp "log\"
 
     # 各エクセルファイルのタイムスタンプ永続化ファイル
-    # .envファイルから読み込む（必須）
-    TimestampFile       = if ($envVars['TIMESTAMP_FILE']) { $envVars['TIMESTAMP_FILE'] } else { throw "TIMESTAMP_FILEが.envファイルに設定されていません" }
+    # .envファイルから読み込む(DataDirectory/timestamp.txt)
+    TimestampFile       = Join-Path $DataDirectoryTemp "timestamp.txt"
 
     # ファイル名パターン
     FileNamePattern     = "GC0{0}.xls"  # {0} が数字に置き換えられます
