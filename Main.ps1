@@ -1,4 +1,4 @@
-# Main.ps1
+﻿# Main.ps1
 # メイン処理スクリプト
 
 # UTF-8エンコーディングを設定
@@ -60,6 +60,7 @@ $skippedCount = 0
 $syncAddedCount = 0
 $syncUpdatedCount = 0
 $syncDeletedCount = 0
+$syncDeleteCandidateCount = 0
 
 # 処理されたファイル名を保持する配列
 $processedFiles = @()
@@ -138,14 +139,24 @@ try {
             # 読み込んだデータを全データ配列に追加
             if ($excelData -and $excelData.Count -gt 0) {
                 $allExcelData += $excelData
+                $lineNamesInFile = @($excelData | ForEach-Object { $_.line_name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+                foreach ($lineName in $lineNamesInFile) {
+                    if ($processedLineNames -notcontains $lineName) {
+                        $processedLineNames += $lineName
+                    }
+                }
                 Write-Verbose "データを追加しました（現在の総件数: $($allExcelData.Count)）"
+            }
+            else {
+                $warningMessage = "空シートを検出したため削除対象から除外します: $fileName"
+                Write-Log -Message $warningMessage -LogPath $logPath -LogLevel "WARNING"
+                Write-Host "  警告: $warningMessage"
             }
             
             # 処理成功後、タイムスタンプを更新
             Update-FileTimestamp -FilePath $xlsPath -Timestamps ([ref]$timestamps) -Verbose
             $processedCount++
             $processedFiles += $fileName
-            $processedLineNames += $fileName.Split('.')[0]
             
         }
         catch {
@@ -163,7 +174,7 @@ try {
     # ステップ4: データ同期処理（追加・更新・削除）
     if ($allExcelData.Count -gt 0) {
         Write-Host "`n[4/4] データ同期処理開始（総件数: $($allExcelData.Count)）..."
-        
+
         try {
             # DataSyncManagerモジュールを使用してデータ同期を実行
             $syncResult = Sync-DataWithApi `
@@ -173,19 +184,21 @@ try {
                 -ApiHeaders $Config.Api.Headers `
                 -AppId $Config.AppId `
                 -LogPath $logPath `
-                -TimeoutSec $Config.Api.TimeoutSec
-            
+                -TimeoutSec $Config.Api.TimeoutSec `
+                -DeleteDryRun $Config.Api.DeleteDryRun
+
             if ($syncResult.Success) {
                 # データ同期処理結果を保持
                 $syncAddedCount = $syncResult.AddedCount
                 $syncUpdatedCount = $syncResult.UpdatedCount
                 $syncDeletedCount = $syncResult.DeletedCount
+                $syncDeleteCandidateCount = $syncResult.DeleteCandidateCount
             }
             else {
                 $errorCount += $syncResult.ErrorCount
                 $errorDetails += $syncResult.ErrorMessages
                 Write-Log -Message "データ同期処理でエラーが発生しました（エラー数: $($syncResult.ErrorCount)）" -LogPath $logPath -LogLevel "ERROR"
-                
+
                 # エラー詳細を表示
                 if ($syncResult.ErrorMessages.Count -gt 0) {
                     Write-Host "`n  エラー詳細:"
@@ -194,7 +207,7 @@ try {
                         Write-Log -Message "エラー詳細: $errorMsg" -LogPath $logPath -LogLevel "ERROR"
                     }
                 }
-                
+
                 # ロールバック対象がある場合はログに記録
                 if ($syncResult.RollbackTargets.Count -gt 0) {
                     Write-Log -Message "ロールバック対象: $($syncResult.RollbackTargets.Count) 件" -LogPath $logPath -LogLevel "ERROR"
@@ -209,23 +222,30 @@ try {
             $errorCount++
         }
     }
-    
+
     # 処理完了ログ（データ同期処理結果も含める）
     $syncInfo = ""
     if ($allExcelData.Count -gt 0) {
-        $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 削除: $syncDeletedCount 件"
+        if ($Config.Api.DeleteDryRun) {
+            $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 削除候補: $syncDeleteCandidateCount 件, 削除(実行): 0 件"
+        }
+        else {
+            $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 削除: $syncDeletedCount 件"
+        }
     }
+
     $filesInfo = ""
     if ($processedFiles.Count -gt 0) {
         $filesInfo = ", 更新ファイル: $($processedFiles -join ', ')"
     }
+
     Write-Log -Message "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）" -LogPath $logPath -LogLevel "INFO"
     Write-Host "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）"
-    
+
     # エラーが発生した場合はメール送信
     if ($errorCount -gt 0) {
         Write-Host "エラーが発生しました。メールを送信します..."
-        
+
         $emailSubject = "【エラー通知】Excelファイル処理でエラーが発生しました"
         $emailBody = @"
 処理中に $errorCount 件のエラーが発生しました。
@@ -236,7 +256,7 @@ $($errorDetails -join "`n`n")
 ログファイル: $logPath
 実行日時: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 "@
-        
+
         try {
             # Microsoft Graph PowerShellを使用してメール送信
             $emailParams = @{
@@ -245,16 +265,16 @@ $($errorDetails -join "`n`n")
                 To      = $Config.Email.To
                 From    = $Config.Email.From
             }
-            
+
             # アプリケーション認証の設定がある場合は追加
             if ($Config.Email.TenantId -and $Config.Email.ClientId -and $Config.Email.ClientSecret) {
                 $emailParams['TenantId'] = $Config.Email.TenantId
                 $emailParams['ClientId'] = $Config.Email.ClientId
                 $emailParams['ClientSecret'] = $Config.Email.ClientSecret
             }
-            
+
             Send-ErrorEmail @emailParams -Verbose
-            
+
             Write-Log -Message "エラーメール送信完了" -LogPath $logPath -LogLevel "INFO"
         }
         catch {
@@ -288,7 +308,7 @@ catch {
             $emailParams['ClientSecret'] = $Config.Email.ClientSecret
         }
         
-        Send-ErrorEmail @emailParams
+        # Send-ErrorEmail @emailParams
     }
     catch {
         Write-Error "メール送信も失敗しました: $_"

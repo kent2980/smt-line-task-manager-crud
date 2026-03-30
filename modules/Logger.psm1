@@ -1,4 +1,4 @@
-# Logger.psm1
+﻿# Logger.psm1
 # ログ出力を行うモジュール
 
 function Write-Log {

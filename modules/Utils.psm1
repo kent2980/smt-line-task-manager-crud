@@ -1,4 +1,4 @@
-# Utils.psm1
+﻿# Utils.psm1
 # ユーティリティ関数モジュール
 
 function ConvertTo-DateString {

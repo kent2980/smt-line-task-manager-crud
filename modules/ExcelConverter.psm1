@@ -1,4 +1,4 @@
-# ExcelConverter.psm1
+﻿# ExcelConverter.psm1
 # .xlsファイルを.xlsx形式に変換するモジュール
 
 function Convert-XlsToXlsx {

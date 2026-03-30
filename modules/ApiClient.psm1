@@ -1,4 +1,4 @@
-# ApiClient.psm1
+﻿# ApiClient.psm1
 # API送信を行うモジュール
 
 function Send-ApiRequest {
@@ -50,7 +50,7 @@ function Send-ApiRequest {
         [hashtable]$Headers,
         
         [Parameter(Mandatory = $false)]
-        [string]$ContentType = "application/json",
+        [string]$ContentType = "application/json; charset=utf-8",
         
         [Parameter(Mandatory = $false)]
         [int]$TimeoutSec = 30
@@ -62,19 +62,41 @@ function Send-ApiRequest {
         $params = @{
             Uri = $Uri
             Method = $Method
-            ContentType = $ContentType
             TimeoutSec = $TimeoutSec
             ErrorAction = "Stop"
         }
         
+        # GETはContent-Type不要（必要なメソッドのみ付与）
+        if ($Method -ne "GET") {
+            $params.ContentType = $ContentType
+        }
+        
         # Bodyが指定されている場合は追加
         if ($Body) {
-            $params.Body = $Body
+            if ($Method -eq "GET") {
+                $params.Body = $Body
+            }
+            else {
+                # 日本語文字化けを避けるため、UTF-8バイト列で送信
+                $params.Body = [System.Text.Encoding]::UTF8.GetBytes($Body)
+            }
         }
         
         # Headersが指定されている場合は追加
         if ($Headers) {
-            $params.Headers = $Headers
+            # GETではContent-Typeヘッダーを送らない
+            if ($Method -eq "GET" -and $Headers.ContainsKey("Content-Type")) {
+                $requestHeaders = @{}
+                foreach ($key in $Headers.Keys) {
+                    if ($key -ne "Content-Type") {
+                        $requestHeaders[$key] = $Headers[$key]
+                    }
+                }
+                $params.Headers = $requestHeaders
+            }
+            else {
+                $params.Headers = $Headers
+            }
         }
         
         $response = Invoke-RestMethod @params
@@ -154,9 +176,13 @@ function Get-ApiData {
         $params = @{
             Uri = $Uri
             Method = $Method
-            ContentType = $ContentType
             TimeoutSec = $TimeoutSec
             ErrorAction = "Stop"
+        }
+        
+        # GETはContent-Type不要（必要なメソッドのみ付与）
+        if ($Method -ne "GET") {
+            $params.ContentType = $ContentType
         }
         
         # Bodyが指定されている場合は追加
@@ -166,7 +192,19 @@ function Get-ApiData {
         
         # Headersが指定されている場合は追加
         if ($Headers) {
-            $params.Headers = $Headers
+            # GETではContent-Typeヘッダーを送らない
+            if ($Method -eq "GET" -and $Headers.ContainsKey("Content-Type")) {
+                $requestHeaders = @{}
+                foreach ($key in $Headers.Keys) {
+                    if ($key -ne "Content-Type") {
+                        $requestHeaders[$key] = $Headers[$key]
+                    }
+                }
+                $params.Headers = $requestHeaders
+            }
+            else {
+                $params.Headers = $Headers
+            }
         }
         
         $response = Invoke-RestMethod @params

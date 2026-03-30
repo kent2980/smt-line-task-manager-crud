@@ -1,4 +1,4 @@
-# EmailSender.psm1
+﻿# EmailSender.psm1
 # メール送信を行うモジュール（Microsoft Graph PowerShell対応）
 
 function Send-ErrorEmail {

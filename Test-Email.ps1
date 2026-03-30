@@ -1,4 +1,4 @@
-# Test-Email.ps1
+﻿# Test-Email.ps1
 # メール送信テストスクリプト
 
 # UTF-8エンコーディングを設定

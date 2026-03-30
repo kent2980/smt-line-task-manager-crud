@@ -1,4 +1,4 @@
-# DataSyncManager.psm1
+﻿# DataSyncManager.psm1
 # データ同期処理を行うモジュール（追加・更新・削除）
 
 function Sync-DataWithApi {
@@ -79,7 +79,10 @@ function Sync-DataWithApi {
         [int]$PutBatchSize = 100,
         
         [Parameter(Mandatory = $false)]
-        [int]$DeleteBatchSize = 100
+        [int]$DeleteBatchSize = 100,
+        
+        [Parameter(Mandatory = $false)]
+        [bool]$DeleteDryRun = $true
     )
     
     # 処理結果を保持するオブジェクト
@@ -88,6 +91,8 @@ function Sync-DataWithApi {
         AddedCount      = 0
         UpdatedCount    = 0
         DeletedCount    = 0
+        DeleteCandidateCount = 0
+        DeleteDryRun    = $DeleteDryRun
         ErrorCount      = 0
         ErrorMessages   = @()
         RollbackTargets = @()
@@ -129,6 +134,7 @@ function Sync-DataWithApi {
         
         # ステップ3: ライン_ロットナンバーで突合
         $comparisonResult = Compare-DataByLineLotNumber -SourceData $SourceData -processedLineNames $processedLineNames -TargetData $targetRecords -LogPath $LogPath
+        $result.DeleteCandidateCount = $comparisonResult.ToDelete.Count
         
         # ステップ4: 追加処理（API POST、100件単位）
         if ($comparisonResult.ToAdd.Count -gt 0) {
@@ -178,35 +184,45 @@ function Sync-DataWithApi {
         
         # ステップ6: 削除処理（API DELETE、100件単位）
         if ($comparisonResult.ToDelete.Count -gt 0) {
-            $deleteResult = Invoke-DeleteData -DataToDelete $comparisonResult.ToDelete -ApiUri $ApiUri -ApiHeaders $ApiHeaders -AppId $AppId -TimeoutSec $TimeoutSec -BatchSize $DeleteBatchSize -LogPath $LogPath
-            
-            if (-not $deleteResult.Success) {
-                $errorMsg = "削除処理に失敗しました"
-                Write-Log -Message $errorMsg -LogPath $LogPath -LogLevel "ERROR"
-                $result.ErrorMessages += $errorMsg
-                $result.ErrorMessages += $deleteResult.ErrorMessages
-                $result.ErrorCount += $deleteResult.ErrorCount
-                $result.RollbackTargets += @{
-                    Operation = "DELETE"
-                    Data      = $deleteResult.ProcessedData
-                }
-                # 追加・更新処理もロールバック対象に追加
-                if ($result.AddedCount -gt 0) {
-                    $result.RollbackTargets += @{
-                        Operation = "POST"
-                        Data      = $comparisonResult.ToAdd
-                    }
-                }
-                if ($result.UpdatedCount -gt 0) {
-                    $result.RollbackTargets += @{
-                        Operation = "PUT"
-                        Data      = $comparisonResult.ToUpdate
-                    }
-                }
-                return $result
+            if ($DeleteDryRun) {
+                $deleteKeys = @($comparisonResult.ToDelete | ForEach-Object {
+                    $lineName = if ($_.line_name.value) { $_.line_name.value } else { $_.line_name }
+                    $lotNumber = if ($_.lot_number.value) { $_.lot_number.value } else { $_.lot_number }
+                    "$lineName$lotNumber"
+                })
+                Write-Log -Message "削除ドライラン: $($deleteKeys.Count) 件（$($deleteKeys -join ', ')）" -LogPath $LogPath -LogLevel "WARNING"
             }
+            else {
+                $deleteResult = Invoke-DeleteData -DataToDelete $comparisonResult.ToDelete -ApiUri $ApiUri -ApiHeaders $ApiHeaders -AppId $AppId -TimeoutSec $TimeoutSec -BatchSize $DeleteBatchSize -LogPath $LogPath
             
-            $result.DeletedCount = $deleteResult.ProcessedCount
+                if (-not $deleteResult.Success) {
+                    $errorMsg = "削除処理に失敗しました"
+                    Write-Log -Message $errorMsg -LogPath $LogPath -LogLevel "ERROR"
+                    $result.ErrorMessages += $errorMsg
+                    $result.ErrorMessages += $deleteResult.ErrorMessages
+                    $result.ErrorCount += $deleteResult.ErrorCount
+                    $result.RollbackTargets += @{
+                        Operation = "DELETE"
+                        Data      = $deleteResult.ProcessedData
+                    }
+                    # 追加・更新処理もロールバック対象に追加
+                    if ($result.AddedCount -gt 0) {
+                        $result.RollbackTargets += @{
+                            Operation = "POST"
+                            Data      = $comparisonResult.ToAdd
+                        }
+                    }
+                    if ($result.UpdatedCount -gt 0) {
+                        $result.RollbackTargets += @{
+                            Operation = "PUT"
+                            Data      = $comparisonResult.ToUpdate
+                        }
+                    }
+                    return $result
+                }
+                
+                $result.DeletedCount = $deleteResult.ProcessedCount
+            }
         }
         
         # 全処理成功
@@ -260,12 +276,6 @@ function Get-TargetDataFromApi {
     
     try {
         do {
-            # キントーンAPIのGETリクエスト形式
-            $bodyObject = @{
-                app        = $AppId
-                totalCount = $true
-            }
-            
             # オフセットとリミットを設定
             if ($offset -gt 0) {
                 $query = "limit $BatchSize offset $offset"
@@ -273,14 +283,15 @@ function Get-TargetDataFromApi {
             else {
                 $query = "limit $BatchSize"
             }
-
-            $bodyObject.query = $query
             
-            $bodyJson = $bodyObject | ConvertTo-Json -Depth 10
+            # GETではBodyを送らず、クエリ文字列としてURLに付与
+            $encodedApp = [System.Uri]::EscapeDataString([string]$AppId)
+            $encodedQuery = [System.Uri]::EscapeDataString($query)
+            $requestUri = "{0}?app={1}&query={2}&totalCount=true" -f $ApiUri, $encodedApp, $encodedQuery
             
             Write-Verbose "API GET リクエスト送信（offset: $offset, limit: $BatchSize）"
             
-            $response = Get-ApiData -Uri $ApiUri -Method "GET" -Body $bodyJson -Headers $ApiHeaders -TimeoutSec $TimeoutSec -Verbose
+            $response = Get-ApiData -Uri $requestUri -Method "GET" -Headers $ApiHeaders -TimeoutSec $TimeoutSec -Verbose
 
             if ($null -ne $response) {
                 
@@ -435,11 +446,13 @@ function Compare-DataByLineLotNumber {
         # 削除対象（更新先のみ存在）
         $toDelete = @()
         foreach ($key in $targetKeys.Keys) {
+            $targetItem = $targetKeys[$key]
+            $targetLineName = if ($targetItem.line_name.value) { $targetItem.line_name.value } else { $targetItem.line_name }
             # 処理済みライン名に含まれている場合は削除対象に追加
-            if ($processedLineNames.Contains($key)) {
+            if ($processedLineNames -contains $targetLineName) {
                 # データが更新元に存在しない場合は削除対象に追加
                 if (-not $sourceKeys.ContainsKey($key)) {
-                    $toDelete += $targetKeys[$key]
+                    $toDelete += $targetItem
                 }
             }
         }
@@ -610,9 +623,6 @@ function Invoke-UpdateData {
 
         }
 
-        # $updateRecordsをjsonファイルに出力
-        $updateRecords | ConvertTo-Json -Depth 20 | Out-File -FilePath "updateRecords.json"
-        
         if ($updateRecords.Count -eq 0) {
             Write-Log -Message "更新対象データがありません" -LogPath $LogPath -LogLevel "WARNING"
             $result.Success = $true
@@ -630,13 +640,10 @@ function Invoke-UpdateData {
             try {
                 # JSON変換
                 $resultObject = @{
-                    app       = $AppId
-                    records   = $batchData
-                    revisions = @(1, 4)
+                    app     = $AppId
+                    records = $batchData
                 }
                 $jsonData = $resultObject | ConvertTo-Json -Depth 20
-                # $jsonDataをjsonファイルに出力
-                $jsonData | Out-File -FilePath "jsonData.json"
                 # API PUT送信
                 Send-ApiRequest `
                     -Uri $ApiUri `
@@ -738,9 +745,8 @@ function Invoke-DeleteData {
             try {
                 # キントーンAPIのDELETE形式
                 $bodyObject = @{
-                    app       = $AppId
-                    ids       = $batchIds
-                    revisions = @(1, 4)
+                    app = $AppId
+                    ids = $batchIds
                 }
                 $jsonData = $bodyObject | ConvertTo-Json -Depth 10
                 

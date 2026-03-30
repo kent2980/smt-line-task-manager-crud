@@ -1,4 +1,4 @@
-# JsonConverter.psm1
+﻿# JsonConverter.psm1
 # データをJSON形式に変換するモジュール
 
 function ConvertTo-JsonData {
@@ -118,7 +118,6 @@ function ConvertTo-JsonData {
         $result = @{
             app       = $AppId
             records   = $wrappedRecords
-            revisions = @(1, 4)
         }
         
         $params = @{

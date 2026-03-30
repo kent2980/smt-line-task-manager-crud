@@ -1,4 +1,4 @@
-# TimestampManager.psm1
+﻿# TimestampManager.psm1
 # タイムスタンプ管理モジュール
 
 function Get-FileTimestamp {

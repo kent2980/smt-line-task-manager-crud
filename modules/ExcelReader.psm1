@@ -1,4 +1,4 @@
-# ExcelReader.psm1
+﻿# ExcelReader.psm1
 # Excelファイルを読み取るモジュール（テンプレート）
 
 function Read-ExcelData {
