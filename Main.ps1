@@ -97,7 +97,8 @@ try {
             $fileName = $Config.FileNamePattern -f $i
             $fileNameXlsx = $Config.FileNamePatternXlsx -f $i
             $xlsPath = Join-Path $Config.DataDirectory $fileName
-            $xlsPathTemp = Join-Path $tempDir $fileName
+            $tempFileName = "{0}_{1}.xls" -f [System.IO.Path]::GetFileNameWithoutExtension($fileName), ([System.Guid]::NewGuid().ToString("N"))
+            $xlsPathTemp = Join-Path $tempDir $tempFileName
             $xlsxPath = Join-Path $xlsxDir $fileNameXlsx
             
             # ファイル存在確認
@@ -131,6 +132,9 @@ try {
             # ステップ2: DataDirectoryTemp → DataDirectoryXlsx に変換（.xls → .xlsx）
             Write-Host "  [2/4] .xls → .xlsx 変換中..."
             $xlsxPath = Convert-XlsToXlsx -XlsPath $xlsPathTemp -XlsxPath $xlsxPath -Verbose
+            if (Test-Path -LiteralPath $xlsPathTemp) {
+                Remove-Item -LiteralPath $xlsPathTemp -Force -ErrorAction SilentlyContinue
+            }
             
             # ステップ3: Excelファイルを読み取り
             Write-Host "  [3/4] Excelファイル読み取り中..."
@@ -165,6 +169,9 @@ try {
             Write-Error $errorMessage
             $errorDetails += $errorMessage
             $errorCount++
+            if ($xlsPathTemp -and (Test-Path -LiteralPath $xlsPathTemp)) {
+                Remove-Item -LiteralPath $xlsPathTemp -Force -ErrorAction SilentlyContinue
+            }
         }
     }
     

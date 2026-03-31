@@ -56,8 +56,8 @@ function Convert-XlsToXlsx {
     
     Write-Verbose ".xlsファイルを.xlsx形式に変換中: $XlsPath -> $XlsxPath"
     
-    # ファイルが使用可能になるまで待機（最大5秒）
-    $maxWaitTime = 5
+    # ファイルが使用可能になるまで待機（最大10秒）
+    $maxWaitTime = 10
     $waitInterval = 0.1
     $waitedTime = 0
     while ($waitedTime -lt $maxWaitTime) {
@@ -71,7 +71,7 @@ function Convert-XlsToXlsx {
             Start-Sleep -Seconds $waitInterval
             $waitedTime += $waitInterval
             if ($waitedTime -ge $maxWaitTime) {
-                throw "ファイルが使用中のため、タイムアウトしました: $XlsPath"
+                throw "ファイルが使用中またはアクセス不可のため、タイムアウトしました: $XlsPath"
             }
         }
     }
@@ -93,13 +93,27 @@ function Convert-XlsToXlsx {
         
         # Workbooks.Openメソッドを呼び出す（パラメータを明示的に指定）
         # パスワードが指定されている場合は使用、そうでなければ空文字列
-        if ([string]::IsNullOrEmpty($Password)) {
-            # パスワードなしで開く
-            $workbook = $workbooks.Open($XlsPath, $false, $true)
-        }
-        else {
-            # パスワードを指定して開く
-            $workbook = $workbooks.Open($XlsPath, $false, $true, $null, $Password)
+        $openRetryMax = 3
+        $openRetryDelaySec = 1
+        $openAttempt = 0
+        while ($openAttempt -lt $openRetryMax -and -not $workbook) {
+            $openAttempt++
+            try {
+                if ([string]::IsNullOrEmpty($Password)) {
+                    # パスワードなしで開く
+                    $workbook = $workbooks.Open($XlsPath, $false, $true)
+                }
+                else {
+                    # パスワードを指定して開く
+                    $workbook = $workbooks.Open($XlsPath, $false, $true, $null, $Password)
+                }
+            }
+            catch {
+                if ($openAttempt -ge $openRetryMax) {
+                    throw
+                }
+                Start-Sleep -Seconds $openRetryDelaySec
+            }
         }
         
         # .xlsx形式で保存（xlOpenXMLWorkbook = 51、パスワードなしで保存）
@@ -110,7 +124,7 @@ function Convert-XlsToXlsx {
         return $XlsxPath
     }
     catch {
-        throw "Excel変換エラー: $_"
+        throw "Excel変換エラー: 入力ファイルを開けませんでした。対象='$XlsPath'。他プロセスによるロック、または同名ブックが既に開かれている可能性があります。詳細: $_"
     }
     finally {
         # クリーンアップ（確実にExcelを終了させる）
