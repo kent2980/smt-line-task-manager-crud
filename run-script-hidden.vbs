@@ -18,7 +18,7 @@ End If
 objShell.CurrentDirectory = strScriptPath
 
 ' PowerShellスクリプトを非表示で実行
-intReturnCode = objShell.Run("""" & strPowerShell & """ -ExecutionPolicy Bypass -NoProfile -File """ & strMainScript & """", 0, False)
+intReturnCode = objShell.Run("""" & strPowerShell & """ -ExecutionPolicy Bypass -NoProfile -File """ & strMainScript & """", 0, True)
 
 ' エラーレベルを返す
 WScript.Quit(intReturnCode)

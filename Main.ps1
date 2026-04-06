@@ -88,7 +88,35 @@ if (-not (Test-Path $xlsxDir)) {
     New-Item -ItemType Directory -Path $xlsxDir
 }
 
+$scriptMutex = $null
+$hasMutex = $false
+
+# 二重起動防止（同時実行によるExcel競合を回避）
 try {
+    $scriptMutex = New-Object System.Threading.Mutex($false, "Global\smt-line-task-manager-crud-main")
+    $hasMutex = $scriptMutex.WaitOne(0, $false)
+}
+catch {
+    $hasMutex = $true
+}
+
+if (-not $hasMutex) {
+    $duplicateRunMessage = "同一スクリプトが既に実行中のため、今回の実行をスキップしました。"
+    Write-Log -Message $duplicateRunMessage -LogPath $logPath -LogLevel "WARNING"
+    Write-Host $duplicateRunMessage
+    exit 0
+}
+
+try {
+    try {
+        Test-ExcelComAvailability -Verbose
+    }
+    catch {
+        $precheckErrorMessage = "事前チェックエラー: Excel COMを初期化できません。$_"
+        Write-Log -Message $precheckErrorMessage -LogPath $logPath -LogLevel "ERROR"
+        throw $precheckErrorMessage
+    }
+
     # ファイル番号のループ処理
     for ($i = $Config.FileNumberStart; $i -le $Config.FileNumberEnd; $i++) {
         
@@ -172,6 +200,7 @@ try {
             if ($xlsPathTemp -and (Test-Path -LiteralPath $xlsPathTemp)) {
                 Remove-Item -LiteralPath $xlsPathTemp -Force -ErrorAction SilentlyContinue
             }
+            Start-Sleep -Milliseconds 300
         }
     }
     
@@ -322,5 +351,16 @@ catch {
     }
     
     exit 1
+}
+finally {
+    if ($scriptMutex -and $hasMutex) {
+        try {
+            $scriptMutex.ReleaseMutex()
+            $scriptMutex.Dispose()
+        }
+        catch {
+            Write-Verbose "二重起動防止ミューテックスの解放に失敗: $_"
+        }
+    }
 }
 

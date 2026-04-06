@@ -1,6 +1,37 @@
 ﻿# ExcelConverter.psm1
 # .xlsファイルを.xlsx形式に変換するモジュール
 
+function Test-ExcelComAvailability {
+    [CmdletBinding()]
+    param()
+
+    $excel = $null
+    try {
+        $excel = New-Object -ComObject Excel.Application
+        return $true
+    }
+    catch {
+        $hresultHex = ""
+        if ($_.Exception.HResult) {
+            $hresultHex = " (HRESULT: 0x{0})" -f ([Convert]::ToString($_.Exception.HResult, 16))
+        }
+        throw "Excel COM初期化エラー: Excel.Application を作成できません。実行ユーザーのログオンセッションで実行してください（タスク スケジューラは「ユーザーがログオンしているときのみ実行」推奨）。詳細: $($_.Exception.Message)$hresultHex"
+    }
+    finally {
+        if ($excel) {
+            try {
+                $excel.Quit()
+                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+            }
+            catch {
+                Write-Verbose "Excel COM事前チェックのクリーンアップ中にエラー: $_"
+            }
+            [System.GC]::Collect()
+            [System.GC]::WaitForPendingFinalizers()
+        }
+    }
+}
+
 function Convert-XlsToXlsx {
     <#
     .SYNOPSIS
@@ -81,6 +112,8 @@ function Convert-XlsToXlsx {
     $workbooks = $null
     
     try {
+        Test-ExcelComAvailability | Out-Null
+
         # Excel COMオブジェクトを作成
         $excel = New-Object -ComObject Excel.Application
         $excel.Visible = $false
@@ -168,18 +201,9 @@ function Convert-XlsToXlsx {
         
         # Excelプロセスが完全に終了するまで待機
         Start-Sleep -Milliseconds 500
-        
-        # Excelプロセスが残っている場合は強制終了（最後の手段）
-        $excelProcesses = Get-Process -Name "EXCEL" -ErrorAction SilentlyContinue
-        if ($excelProcesses) {
-            Write-Verbose "残存しているExcelプロセスを終了します"
-            $excelProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
-            # プロセス終了を待機
-            Start-Sleep -Milliseconds 300
-        }
     }
 }
 
 # モジュールをエクスポート
-Export-ModuleMember -Function Convert-XlsToXlsx
+Export-ModuleMember -Function Test-ExcelComAvailability, Convert-XlsToXlsx
 
