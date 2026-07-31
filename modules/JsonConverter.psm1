@@ -1,6 +1,20 @@
 ﻿# JsonConverter.psm1
 # データをJSON形式に変換するモジュール
 
+function Get-ScheduleDate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$InputObject
+    )
+
+    if ($InputObject.sub_schedule -and $InputObject.sub_schedule.Count -gt 0) {
+        return $InputObject.sub_schedule[0].sub_schedule_date
+    }
+
+    return $InputObject.standard_date
+}
+
 function ConvertTo-JsonData {
     <#
     .SYNOPSIS
@@ -78,13 +92,7 @@ function ConvertTo-JsonData {
         foreach ($item in $dataArray) {
             $wrappedItem = ConvertTo-WrappedJsonObject -InputObject $item
             # schedule_dateを追加（sub_scheduleの最初の日付、またはstandard_dateを使用）
-            $scheduleDate = $null
-            if ($item.sub_schedule -and $item.sub_schedule.Count -gt 0) {
-                $scheduleDate = $item.sub_schedule[0].sub_schedule_date
-            }
-            if ([string]::IsNullOrEmpty($scheduleDate)) {
-                $scheduleDate = $item.standard_date
-            }
+            $scheduleDate = Get-ScheduleDate -InputObject $item
             
             # schedule_dateを最初に追加
             $wrappedHash = @{
@@ -223,5 +231,5 @@ function ConvertTo-WrappedJsonObject {
 }
 
 # モジュールをエクスポート
-Export-ModuleMember -Function ConvertTo-JsonData, ConvertTo-WrappedJsonObject
+Export-ModuleMember -Function Get-ScheduleDate, ConvertTo-JsonData, ConvertTo-WrappedJsonObject
 

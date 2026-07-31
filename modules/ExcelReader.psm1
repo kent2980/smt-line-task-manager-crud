@@ -77,6 +77,7 @@ function Read-ExcelData {
         $data = @()  # データ配列を初期化
 
         for ($page = 1; $page -le $pageCount; $page++) {
+            $scheduleDateRow = 8 + (($page - 1) * 62)
             for ($row = $startRow; $row -le $endRow; $row += 2) {
                 # 2行ごとにデータを取得
                 $rowDown = $row + 1
@@ -108,7 +109,7 @@ function Read-ExcelData {
                 for ($column = 9; $column -le 31; $column++) {
                     
                     # 列番号を文字列に変換
-                    $dateStr = $excelPackage.Workbook.Worksheets[1].Cells[8, $column].value
+                    $dateStr = $excelPackage.Workbook.Worksheets[1].Cells[$scheduleDateRow, $column].value
                     $convertedDate = ConvertTo-DateString -DateValue $dateStr
                     $columnValue = $excelPackage.Workbook.Worksheets[1].Cells[$row, $column].value
                     

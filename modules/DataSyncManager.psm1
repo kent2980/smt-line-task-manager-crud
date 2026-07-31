@@ -613,6 +613,8 @@ function Invoke-UpdateData {
             # 更新元データをキントーンAPI形式に変換（全項目）
             # JsonConverterモジュールの関数を使用
             $updateRecord = ConvertTo-WrappedJsonObject -InputObject $sourceItem
+            $scheduleDate = Get-ScheduleDate -InputObject $sourceItem
+            $updateRecord | Add-Member -MemberType NoteProperty -Name 'schedule_date' -Value ([PSCustomObject]@{value = $scheduleDate }) -Force
             # $updateRecordからline_lot_numberを削除
             $updateRecord.PSObject.Properties.Remove('line_lot_number')
             # $updateRecordをrecordキーでラップ
