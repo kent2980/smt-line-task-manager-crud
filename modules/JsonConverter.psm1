@@ -15,6 +15,74 @@ function Get-ScheduleDate {
     return $InputObject.standard_date
 }
 
+function Get-IndexFromSubSchedule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$InputObject,
+
+        [Parameter(Mandatory = $false)]
+        [DateTime]$ReferenceDate = (Get-Date)
+    )
+
+    $originalIndex = $InputObject.index
+    if (-not $InputObject.sub_schedule -or $InputObject.sub_schedule.Count -eq 0) {
+        return $originalIndex
+    }
+
+    $candidates = @()
+    $position = 0
+    foreach ($subItem in $InputObject.sub_schedule) {
+        $parsedDate = [DateTime]::MinValue
+        $dateValue = $subItem.sub_schedule_date
+        $isValidDate = if ($dateValue -is [DateTime]) {
+            $parsedDate = $dateValue.Date
+            $true
+        }
+        else {
+            [DateTime]::TryParseExact(
+                [string]$dateValue,
+                'yyyy-MM-dd',
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::None,
+                [ref]$parsedDate
+            )
+        }
+
+        if ($isValidDate) {
+            $candidates += [PSCustomObject]@{
+                Date      = $parsedDate.Date
+                Index     = $subItem.sub_index
+                Position  = $position
+            }
+        }
+        $position++
+    }
+
+    if ($candidates.Count -eq 0) {
+        return $originalIndex
+    }
+
+    $referenceDay = $ReferenceDate.Date
+    $selected = $candidates |
+        Where-Object { $_.Date -ge $referenceDay } |
+        Sort-Object -Property Date, Position |
+        Select-Object -First 1
+
+    if ($null -eq $selected) {
+        $selected = $candidates |
+            Where-Object { $_.Date -lt $referenceDay } |
+            Sort-Object -Property @{Expression = 'Date'; Descending = $true }, Position |
+            Select-Object -First 1
+    }
+
+    if ($null -eq $selected) {
+        return $originalIndex
+    }
+
+    return $selected.Index
+}
+
 function ConvertTo-JsonData {
     <#
     .SYNOPSIS
@@ -182,10 +250,20 @@ function ConvertTo-WrappedJsonObject {
     # PSCustomObjectの場合は各プロパティをラップ
     if ($InputObject -is [PSCustomObject]) {
         $wrappedHash = @{}
+        $effectiveIndex = if ($InputObject.PSObject.Properties['index']) {
+            Get-IndexFromSubSchedule -InputObject $InputObject
+        }
+        else {
+            $null
+        }
         
         foreach ($property in $InputObject.PSObject.Properties) {
             $propertyName = $property.Name
             $propertyValue = $property.Value
+
+            if ($propertyName -eq 'index') {
+                $propertyValue = $effectiveIndex
+            }
             
             # sub_scheduleの場合は特別処理（配列内の各要素をラップ）
             if ($propertyName -eq "sub_schedule" -and $propertyValue -is [System.Array]) {

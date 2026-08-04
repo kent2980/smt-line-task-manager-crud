@@ -65,6 +65,9 @@ $syncDeleteCandidateCount = 0
 # 処理されたファイル名を保持する配列
 $processedFiles = @()
 
+# kintone同期成功後に確定するファイルタイムスタンプを保持するハッシュテーブル
+$pendingTimestamps = @{}
+
 # 処理されたライン名を保持する配列
 $processedLineNames = @()
 
@@ -87,6 +90,12 @@ if (-not (Test-Path $xlsxDir)) {
     # ディレクトリが存在しない場合は作成
     New-Item -ItemType Directory -Path $xlsxDir
 }
+
+# 日次全件同期の完了状態
+$dailyFullSyncStateFile = Join-Path $tempDir "last-full-sync-date.txt"
+$dailyFullSyncDate = Get-Date -Format "yyyy-MM-dd"
+$isDailyFullSyncRequired = $true
+$expectedFileCount = $Config.FileNumberEnd - $Config.FileNumberStart + 1
 
 $scriptMutex = $null
 $hasMutex = $false
@@ -117,6 +126,27 @@ try {
         throw $precheckErrorMessage
     }
 
+    # 本日の全件同期が完了済みか確認する
+    try {
+        if (Test-Path -LiteralPath $dailyFullSyncStateFile) {
+            $stateFileEncoding = [Text.UTF8Encoding]::new($false, $true)
+            $lastFullSyncDate = [IO.File]::ReadAllText($dailyFullSyncStateFile, $stateFileEncoding).Trim()
+            $isDailyFullSyncRequired = $lastFullSyncDate -ne $dailyFullSyncDate
+        }
+    }
+    catch {
+        $stateReadWarning = "日次全件同期の完了状態を読み込めないため、全ファイルを処理します: $_"
+        Write-Log -Message $stateReadWarning -LogPath $logPath -LogLevel "WARNING"
+        Write-Warning $stateReadWarning
+        $isDailyFullSyncRequired = $true
+    }
+
+    if ($isDailyFullSyncRequired) {
+        $dailyFullSyncMessage = "本日初回の全件同期として、対象の全 $expectedFileCount ファイルを処理します。"
+        Write-Log -Message $dailyFullSyncMessage -LogPath $logPath -LogLevel "INFO"
+        Write-Host $dailyFullSyncMessage
+    }
+
     # ファイル番号のループ処理
     for ($i = $Config.FileNumberStart; $i -le $Config.FileNumberEnd; $i++) {
         
@@ -145,12 +175,22 @@ try {
             
             Write-Verbose "タイムスタンプ検証: ファイル=$normalizedXlsPath, 保存済みタイムスタンプ=$savedTimestamp"
             
-            $isUpdated = Test-FileUpdated -FilePath $xlsPath -SavedTimestamp $savedTimestamp -Timestamps $timestamps -Verbose
+            if ($isDailyFullSyncRequired) {
+                $isUpdated = $true
+                Write-Verbose "日次全件同期対象: $normalizedXlsPath"
+            }
+            else {
+                $isUpdated = Test-FileUpdated -FilePath $xlsPath -SavedTimestamp $savedTimestamp -Timestamps $timestamps -Verbose
+            }
 
             if (-not $isUpdated) {
                 $skippedCount++
                 continue
             }
+
+            # 今回同期するファイルの更新日時を保持する
+            # 同期中に元ファイルが更新された場合、その更新を次回の処理対象に残す
+            $timestampForSync = Get-FileTimestamp -FilePath $xlsPath
             
             
             # ステップ1: DataDirectory → DataDirectoryTemp にコピー
@@ -185,10 +225,9 @@ try {
                 Write-Host "  警告: $warningMessage"
             }
             
-            # 処理成功後、タイムスタンプを更新
-            Update-FileTimestamp -FilePath $xlsPath -Timestamps ([ref]$timestamps) -Verbose
             $processedCount++
             $processedFiles += $fileName
+            $pendingTimestamps[$normalizedXlsPath] = $timestampForSync
             
         }
         catch {
@@ -204,9 +243,6 @@ try {
         }
     }
     
-    # タイムスタンプを保存
-    Save-Timestamps -Timestamps $timestamps -TimestampFilePath $Config.TimestampFile -Verbose
-
     # ステップ4: データ同期処理（追加・更新・削除）
     if ($allExcelData.Count -gt 0) {
         Write-Host "`n[4/4] データ同期処理開始（総件数: $($allExcelData.Count)）..."
@@ -229,6 +265,39 @@ try {
                 $syncUpdatedCount = $syncResult.UpdatedCount
                 $syncDeletedCount = $syncResult.DeletedCount
                 $syncDeleteCandidateCount = $syncResult.DeleteCandidateCount
+
+                # kintone同期成功後にのみ、処理済みファイルのタイムスタンプを確定・保存
+                foreach ($processedFilePath in $pendingTimestamps.Keys) {
+                    $timestamps[$processedFilePath] = $pendingTimestamps[$processedFilePath]
+                    Write-Verbose "タイムスタンプを確定しました: $processedFilePath -> $($pendingTimestamps[$processedFilePath])"
+                }
+                Save-Timestamps -Timestamps $timestamps -TimestampFilePath $Config.TimestampFile -Verbose
+
+                # 対象ファイルをすべて処理できた場合だけ、本日の日次全件同期を完了扱いにする
+                if ($isDailyFullSyncRequired) {
+                    if ($processedCount -eq $expectedFileCount) {
+                        $stateTempFile = "$dailyFullSyncStateFile.$([Guid]::NewGuid().ToString('N')).tmp"
+                        try {
+                            $stateFileEncoding = [Text.UTF8Encoding]::new($false)
+                            [IO.File]::WriteAllText($stateTempFile, $dailyFullSyncDate, $stateFileEncoding)
+                            Move-Item -LiteralPath $stateTempFile -Destination $dailyFullSyncStateFile -Force
+                        }
+                        finally {
+                            if (Test-Path -LiteralPath $stateTempFile) {
+                                Remove-Item -LiteralPath $stateTempFile -Force -ErrorAction SilentlyContinue
+                            }
+                        }
+
+                        $dailyFullSyncCompletedMessage = "本日の日次全件同期が完了しました: $dailyFullSyncDate"
+                        Write-Log -Message $dailyFullSyncCompletedMessage -LogPath $logPath -LogLevel "INFO"
+                        Write-Host $dailyFullSyncCompletedMessage
+                    }
+                    else {
+                        $dailyFullSyncIncompleteMessage = "日次全件同期は未完了です（処理: $processedCount / $expectedFileCount ファイル）。次回も全ファイルを処理します。"
+                        Write-Log -Message $dailyFullSyncIncompleteMessage -LogPath $logPath -LogLevel "WARNING"
+                        Write-Warning $dailyFullSyncIncompleteMessage
+                    }
+                }
             }
             else {
                 $errorCount += $syncResult.ErrorCount
@@ -363,4 +432,3 @@ finally {
         }
     }
 }
-

@@ -21,19 +21,20 @@
 ## 処理フロー
 
 1. **COMオブジェクトで.xls→.xlsxに変換**
-   - `ExcelConverter.psm1`の`Convert-XlsToXlsx`関数を使用
 
+   - `ExcelConverter.psm1`の`Convert-XlsToXlsx`関数を使用
 2. **ImportExcelモジュールで読み取り**
+
    - `ExcelReader.psm1`の`Read-ExcelData`関数を使用
    - **注意**: この関数はテンプレートです。実際の読み取り処理を実装してください
-
 3. **読み取ったデータをJSON変換**
+
    - `JsonConverter.psm1`の`ConvertTo-JsonData`関数を使用
-
 4. **API送信**
-   - `ApiClient.psm1`の`Send-ApiRequest`関数を使用
 
+   - `ApiClient.psm1`の`Send-ApiRequest`関数を使用
 5. **失敗時の処理**
+
    - ログファイルに出力（`Logger.psm1`）
    - メール送信（`EmailSender.psm1`）
 
@@ -96,7 +97,6 @@ KINTONE_APP_ID=86
 メール送信には以下の2つの認証方法があります：
 
 1. **対話的認証（推奨）**: 初回実行時にブラウザが開き、Microsoft 365アカウントでログインします。`.env`ファイルに`EMAIL_TENANT_ID`、`EMAIL_CLIENT_ID`、`EMAIL_CLIENT_SECRET`の設定は不要です。
-
 2. **アプリケーション認証**: Azure ADアプリケーションを登録し、クライアントIDとシークレットを使用します。`.env`ファイルに`EMAIL_TENANT_ID`、`EMAIL_CLIENT_ID`、`EMAIL_CLIENT_SECRET`を設定してください。
 
 **注意**: Microsoft Graph PowerShellを使用する場合、アプリパスワードは不要です。SMTPを使用する場合のみアプリパスワードが必要です（現在はMicrosoft Graph PowerShellを使用しています）。
@@ -106,6 +106,7 @@ KINTONE_APP_ID=86
 `modules/ExcelReader.psm1`の`Read-ExcelData`関数内のTODOコメント部分を実装してください。
 
 例：
+
 ```powershell
 if ($WorksheetName) {
     $data = Import-Excel -Path $XlsxPath -WorksheetName $WorksheetName
@@ -129,6 +130,7 @@ if ($WorksheetName) {
 Windowsで定期実行する方法については、[Windowsで定期実行する方法](docs/WINDOWS_SCHEDULED_TASK.md)を参照してください。
 
 主な方法：
+
 - **タスクスケジューラ**（推奨）: Windows標準のタスクスケジューラを使用
 - **PowerShellスケジュールジョブ**: PowerShellの`Register-ScheduledJob`を使用
 - **バッチファイル + タスクスケジューラ**: バッチファイル経由で実行
@@ -136,6 +138,7 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
 ## 各モジュールの説明
 
 ### ExcelConverter.psm1
+
 - **関数**: `Convert-XlsToXlsx`
 - **機能**: .xlsファイルを.xlsx形式に変換
 - **パラメータ**:
@@ -143,6 +146,7 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
   - `XlsxPath`: 変換後の.xlsxファイルのパス（省略可）
 
 ### ExcelReader.psm1
+
 - **関数**: `Read-ExcelData`
 - **機能**: Excelファイルを読み取り（テンプレート）
 - **パラメータ**:
@@ -150,6 +154,7 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
   - `WorksheetName`: ワークシート名（省略可）
 
 ### JsonConverter.psm1
+
 - **関数**: `ConvertTo-JsonData`
 - **機能**: データをJSON形式に変換
 - **パラメータ**:
@@ -158,6 +163,7 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
   - `Compress`: 圧縮形式で出力するか
 
 ### ApiClient.psm1
+
 - **関数**: `Send-ApiRequest`
 - **機能**: APIにリクエストを送信
 - **パラメータ**:
@@ -169,6 +175,7 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
   - `TimeoutSec`: タイムアウト秒数（デフォルト: 30）
 
 ### Logger.psm1
+
 - **関数**: `Write-Log`, `Initialize-Logger`
 - **機能**: ログファイルへの書き込み
 - **パラメータ**:
@@ -177,6 +184,7 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
   - `LogLevel`: ログレベル（INFO, WARNING, ERROR）
 
 ### EmailSender.psm1
+
 - **関数**: `Send-ErrorEmail`
 - **機能**: エラーメールを送信
 - **パラメータ**:
@@ -206,20 +214,23 @@ Windowsで定期実行する方法については、[Windowsで定期実行す�
 ## トラブルシューティング
 
 ### モジュールが見つからない
+
 - `modules`ディレクトリが正しい場所にあるか確認してください
 - モジュールファイルのパスが正しいか確認してください
 
 ### Excel変換エラー
+
 - Excelがインストールされているか確認してください
 - ファイルが他のプロセスで開かれていないか確認してください
 
 ### API送信エラー
+
 - APIのエンドポイントURLが正しいか確認してください
 - ネットワーク接続を確認してください
 - APIの認証情報が正しいか確認してください
 
 ### メール送信エラー
+
 - SMTPサーバーの設定が正しいか確認してください
 - 認証情報が正しいか確認してください
 - ファイアウォールの設定を確認してください
-
