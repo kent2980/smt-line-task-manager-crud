@@ -35,14 +35,6 @@ if (Test-Path $envFilePath) {
 
 # データディレクトリ
 $DataDirectoryTemp = if ($envVars['DATA_DIRECTORY_TEMP']) { $envVars['DATA_DIRECTORY_TEMP'] } else { throw "DATA_DIRECTORY_TEMPが.envファイルに設定されていません" }
-$deleteDryRun = $true
-if ($envVars.ContainsKey('KINTONE_DELETE_DRY_RUN')) {
-    $rawDeleteDryRun = "$($envVars['KINTONE_DELETE_DRY_RUN'])".Trim().ToLower()
-    if ($rawDeleteDryRun -in @("false", "0", "off", "no")) {
-        $deleteDryRun = $false
-    }
-}
-
 # ファイルパス設定
 $Config = @{
 
@@ -87,13 +79,11 @@ $Config = @{
             Get    = "GET"
             Post   = "POST"
             Put    = "PUT"
-            Delete = "DELETE"
         }
         Headers    = @{
             "X-Cybozu-API-Token" = if ($envVars['KINTONE_API_TOKEN']) { $envVars['KINTONE_API_TOKEN'] } else { throw "KINTONE_API_TOKENが.envファイルに設定されていません" }
         }
         TimeoutSec = 30
-        DeleteDryRun = $deleteDryRun
     }
     
     # メール設定（Microsoft Graph PowerShell）

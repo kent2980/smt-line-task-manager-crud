@@ -1,5 +1,5 @@
 ﻿# DataSyncManager.psm1
-# データ同期処理を行うモジュール（追加・更新・削除）
+# データ同期処理を行うモジュール（追加・更新）
 
 function Sync-DataWithApi {
     <#
@@ -8,14 +8,11 @@ function Sync-DataWithApi {
     
     .DESCRIPTION
     フローチャートに基づいて、更新元データと更新先データを突合し、
-    追加・更新・削除処理を順次実行します。
+    追加・更新処理を順次実行します。
     
     .PARAMETER SourceData
     更新元データ（Excelから読み込んだデータ配列）
 
-    .PARAMETER processedLineNames
-    処理済みライン名の配列
-    
     .PARAMETER ApiUri
     APIエンドポイントURL
     
@@ -40,9 +37,6 @@ function Sync-DataWithApi {
     .PARAMETER PutBatchSize
     PUTリクエストのバッチサイズ（デフォルト: 100）
     
-    .PARAMETER DeleteBatchSize
-    DELETEリクエストのバッチサイズ（デフォルト: 100）
-    
     .EXAMPLE
     $result = Sync-DataWithApi -SourceData $excelData -ApiUri $Config.Api.Uri -ApiHeaders $Config.Api.Headers -AppId $Config.AppId -LogPath $logPath
     #>
@@ -50,9 +44,6 @@ function Sync-DataWithApi {
     param(
         [Parameter(Mandatory = $true)]
         [array]$SourceData,
-        
-        [Parameter(Mandatory = $true)]
-        [array]$processedLineNames,
         
         [Parameter(Mandatory = $true)]
         [string]$ApiUri,
@@ -76,13 +67,7 @@ function Sync-DataWithApi {
         [int]$PostBatchSize = 100,
         
         [Parameter(Mandatory = $false)]
-        [int]$PutBatchSize = 100,
-        
-        [Parameter(Mandatory = $false)]
-        [int]$DeleteBatchSize = 100,
-        
-        [Parameter(Mandatory = $false)]
-        [bool]$DeleteDryRun = $true
+        [int]$PutBatchSize = 100
     )
     
     # 処理結果を保持するオブジェクト
@@ -90,9 +75,6 @@ function Sync-DataWithApi {
         Success         = $false
         AddedCount      = 0
         UpdatedCount    = 0
-        DeletedCount    = 0
-        DeleteCandidateCount = 0
-        DeleteDryRun    = $DeleteDryRun
         ErrorCount      = 0
         ErrorMessages   = @()
         RollbackTargets = @()
@@ -133,8 +115,7 @@ function Sync-DataWithApi {
         }
         
         # ステップ3: ライン_ロットナンバーで突合
-        $comparisonResult = Compare-DataByLineLotNumber -SourceData $SourceData -processedLineNames $processedLineNames -TargetData $targetRecords -LogPath $LogPath
-        $result.DeleteCandidateCount = $comparisonResult.ToDelete.Count
+        $comparisonResult = Compare-DataByLineLotNumber -SourceData $SourceData -TargetData $targetRecords -LogPath $LogPath
         
         # ステップ4: 追加処理（API POST、100件単位）
         if ($comparisonResult.ToAdd.Count -gt 0) {
@@ -182,49 +163,6 @@ function Sync-DataWithApi {
             $result.UpdatedCount = $updateResult.ProcessedCount
         }
         
-        # ステップ6: 削除処理（API DELETE、100件単位）
-        if ($comparisonResult.ToDelete.Count -gt 0) {
-            if ($DeleteDryRun) {
-                $deleteKeys = @($comparisonResult.ToDelete | ForEach-Object {
-                    $lineName = if ($_.line_name.value) { $_.line_name.value } else { $_.line_name }
-                    $lotNumber = if ($_.lot_number.value) { $_.lot_number.value } else { $_.lot_number }
-                    "$lineName$lotNumber"
-                })
-                Write-Log -Message "削除ドライラン: $($deleteKeys.Count) 件（$($deleteKeys -join ', ')）" -LogPath $LogPath -LogLevel "WARNING"
-            }
-            else {
-                $deleteResult = Invoke-DeleteData -DataToDelete $comparisonResult.ToDelete -ApiUri $ApiUri -ApiHeaders $ApiHeaders -AppId $AppId -TimeoutSec $TimeoutSec -BatchSize $DeleteBatchSize -LogPath $LogPath
-            
-                if (-not $deleteResult.Success) {
-                    $errorMsg = "削除処理に失敗しました"
-                    Write-Log -Message $errorMsg -LogPath $LogPath -LogLevel "ERROR"
-                    $result.ErrorMessages += $errorMsg
-                    $result.ErrorMessages += $deleteResult.ErrorMessages
-                    $result.ErrorCount += $deleteResult.ErrorCount
-                    $result.RollbackTargets += @{
-                        Operation = "DELETE"
-                        Data      = $deleteResult.ProcessedData
-                    }
-                    # 追加・更新処理もロールバック対象に追加
-                    if ($result.AddedCount -gt 0) {
-                        $result.RollbackTargets += @{
-                            Operation = "POST"
-                            Data      = $comparisonResult.ToAdd
-                        }
-                    }
-                    if ($result.UpdatedCount -gt 0) {
-                        $result.RollbackTargets += @{
-                            Operation = "PUT"
-                            Data      = $comparisonResult.ToUpdate
-                        }
-                    }
-                    return $result
-                }
-                
-                $result.DeletedCount = $deleteResult.ProcessedCount
-            }
-        }
-        
         # 全処理成功
         $result.Success = $true
         
@@ -237,7 +175,7 @@ function Sync-DataWithApi {
         $result.ErrorCount++
         
         # ロールバック対象を記録
-        if ($result.AddedCount -gt 0 -or $result.UpdatedCount -gt 0 -or $result.DeletedCount -gt 0) {
+        if ($result.AddedCount -gt 0 -or $result.UpdatedCount -gt 0) {
             Write-Log -Message "ロールバック対象を記録しました（成功分も含めて全体失敗扱い）" -LogPath $LogPath -LogLevel "ERROR"
         }
         
@@ -373,7 +311,7 @@ function Get-TargetDataFromApi {
 function Compare-DataByLineLotNumber {
     <#
     .SYNOPSIS
-    ライン_ロットナンバーでデータを突合し、追加・更新・削除対象を抽出します。
+    ライン_ロットナンバーでデータを突合し、追加・更新対象を抽出します。
     #>
     [CmdletBinding()]
     param(
@@ -381,10 +319,6 @@ function Compare-DataByLineLotNumber {
         [AllowEmptyCollection()]
         [array]$SourceData,
 
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [array]$processedLineNames,
-        
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
         [array]$TargetData,
@@ -443,24 +377,9 @@ function Compare-DataByLineLotNumber {
             }
         }
         
-        # 削除対象（更新先のみ存在）
-        $toDelete = @()
-        foreach ($key in $targetKeys.Keys) {
-            $targetItem = $targetKeys[$key]
-            $targetLineName = if ($targetItem.line_name.value) { $targetItem.line_name.value } else { $targetItem.line_name }
-            # 処理済みライン名に含まれている場合は削除対象に追加
-            if ($processedLineNames -contains $targetLineName) {
-                # データが更新元に存在しない場合は削除対象に追加
-                if (-not $sourceKeys.ContainsKey($key)) {
-                    $toDelete += $targetItem
-                }
-            }
-        }
-        
         $returnItem = [PSCustomObject]@{
             ToAdd    = $toAdd
             ToUpdate = $toUpdate
-            ToDelete = $toDelete
         }
         return $returnItem
     }
@@ -676,112 +595,6 @@ function Invoke-UpdateData {
     }
 }
 
-function Invoke-DeleteData {
-    <#
-    .SYNOPSIS
-    削除処理を実行します（API DELETE、100件単位）。
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [array]$DataToDelete,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$ApiUri,
-        
-        [Parameter(Mandatory = $true)]
-        [hashtable]$ApiHeaders,
-        
-        [Parameter(Mandatory = $true)]
-        [int]$AppId,
-        
-        [Parameter(Mandatory = $false)]
-        [int]$TimeoutSec = 30,
-        
-        [Parameter(Mandatory = $false)]
-        [int]$BatchSize = 100,
-        
-        [Parameter(Mandatory = $true)]
-        [string]$LogPath
-    )
-    
-    $result = [PSCustomObject]@{
-        Success        = $false
-        ProcessedCount = 0
-        ErrorCount     = 0
-        ErrorMessages  = @()
-        ProcessedData  = @()
-    }
-    
-    try {
-        # 削除対象のレコードIDを抽出
-        $recordIds = @()
-        foreach ($item in $DataToDelete) {
-            # キントーンAPIのレスポンス形式を考慮
-            $recordId = $null
-            if ($item.PSObject.Properties['$id']) {
-                $idProp = $item.PSObject.Properties['$id']
-                $recordId = if ($idProp.Value.value) { $idProp.Value.value } else { $idProp.Value }
-            }
-            
-            if ($null -ne $recordId) {
-                $recordIds += $recordId
-            }
-        }
-        
-        if ($recordIds.Count -eq 0) {
-            Write-Log -Message "削除対象のレコードIDが取得できませんでした" -LogPath $LogPath -LogLevel "WARNING"
-            $result.Success = $true
-            return $result
-        }
-        
-        $totalBatches = [Math]::Ceiling($recordIds.Count / $BatchSize)
-        
-        for ($batchIndex = 0; $batchIndex -lt $totalBatches; $batchIndex++) {
-            $startIndex = $batchIndex * $BatchSize
-            $endIndex = [Math]::Min($startIndex + $BatchSize - 1, $recordIds.Count - 1)
-            $batchIds = $recordIds[$startIndex..$endIndex]
-            $batchNumber = $batchIndex + 1
-        
-            
-            try {
-                # キントーンAPIのDELETE形式
-                $bodyObject = @{
-                    app = $AppId
-                    ids = $batchIds
-                }
-                $jsonData = $bodyObject | ConvertTo-Json -Depth 10
-                
-                # API DELETE送信
-                Send-ApiRequest `
-                    -Uri $ApiUri `
-                    -Method "DELETE" `
-                    -Body $jsonData `
-                    -Headers $ApiHeaders `
-                    -TimeoutSec $TimeoutSec `
-                    -Verbose | Out-Null
-                
-                $result.ProcessedCount += $batchIds.Count
-                $result.ProcessedData += $DataToDelete[$startIndex..$endIndex]
-            }
-            catch {
-                $errorMsg = "削除処理 バッチ $batchNumber エラー: $_"
-                Write-Log -Message $errorMsg -LogPath $LogPath -LogLevel "ERROR"
-                $result.ErrorMessages += $errorMsg
-                $result.ErrorCount++
-                throw $errorMsg
-            }
-        }
-        
-        $result.Success = $true
-        return $result
-    }
-    catch {
-        $result.Success = $false
-        return $result
-    }
-}
-
 # モジュールをエクスポート
-Export-ModuleMember -Function Sync-DataWithApi, Get-TargetDataFromApi, Compare-DataByLineLotNumber, Invoke-AddData, Invoke-UpdateData, Invoke-DeleteData
+Export-ModuleMember -Function Sync-DataWithApi, Get-TargetDataFromApi, Compare-DataByLineLotNumber, Invoke-AddData, Invoke-UpdateData
 

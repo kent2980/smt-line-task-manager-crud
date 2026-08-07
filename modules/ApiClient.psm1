@@ -40,7 +40,7 @@ function Send-ApiRequest {
         [string]$Uri,
         
         [Parameter(Mandatory = $false)]
-        [ValidateSet("GET", "POST", "PUT", "DELETE", "PATCH")]
+        [ValidateSet("GET", "POST", "PUT", "PATCH")]
         [string]$Method = "POST",
         
         [Parameter(Mandatory = $false)]
@@ -154,7 +154,7 @@ function Get-ApiData {
         [string]$Uri,
         
         [Parameter(Mandatory = $false)]
-        [ValidateSet("GET", "POST", "PUT", "DELETE", "PATCH")]
+        [ValidateSet("GET", "POST", "PUT", "PATCH")]
         [string]$Method = "GET",
         
         [Parameter(Mandatory = $false)]

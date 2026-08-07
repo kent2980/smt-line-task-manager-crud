@@ -59,17 +59,12 @@ $skippedCount = 0
 # データ同期処理結果を保持する変数
 $syncAddedCount = 0
 $syncUpdatedCount = 0
-$syncDeletedCount = 0
-$syncDeleteCandidateCount = 0
 
 # 処理されたファイル名を保持する配列
 $processedFiles = @()
 
 # kintone同期成功後に確定するファイルタイムスタンプを保持するハッシュテーブル
 $pendingTimestamps = @{}
-
-# 処理されたライン名を保持する配列
-$processedLineNames = @()
 
 # 全Excelデータを蓄積する配列
 $allExcelData = @()
@@ -211,16 +206,10 @@ try {
             # 読み込んだデータを全データ配列に追加
             if ($excelData -and $excelData.Count -gt 0) {
                 $allExcelData += $excelData
-                $lineNamesInFile = @($excelData | ForEach-Object { $_.line_name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-                foreach ($lineName in $lineNamesInFile) {
-                    if ($processedLineNames -notcontains $lineName) {
-                        $processedLineNames += $lineName
-                    }
-                }
                 Write-Verbose "データを追加しました（現在の総件数: $($allExcelData.Count)）"
             }
             else {
-                $warningMessage = "空シートを検出したため削除対象から除外します: $fileName"
+                $warningMessage = "空シートを検出したため同期対象から除外します: $fileName"
                 Write-Log -Message $warningMessage -LogPath $logPath -LogLevel "WARNING"
                 Write-Host "  警告: $warningMessage"
             }
@@ -243,7 +232,7 @@ try {
         }
     }
     
-    # ステップ4: データ同期処理（追加・更新・削除）
+    # ステップ4: データ同期処理（追加・更新）
     if ($allExcelData.Count -gt 0) {
         Write-Host "`n[4/4] データ同期処理開始（総件数: $($allExcelData.Count)）..."
 
@@ -251,20 +240,16 @@ try {
             # DataSyncManagerモジュールを使用してデータ同期を実行
             $syncResult = Sync-DataWithApi `
                 -SourceData $allExcelData `
-                -processedLineNames $processedLineNames `
                 -ApiUri $Config.Api.Uri `
                 -ApiHeaders $Config.Api.Headers `
                 -AppId $Config.AppId `
                 -LogPath $logPath `
-                -TimeoutSec $Config.Api.TimeoutSec `
-                -DeleteDryRun $Config.Api.DeleteDryRun
+                -TimeoutSec $Config.Api.TimeoutSec
 
             if ($syncResult.Success) {
                 # データ同期処理結果を保持
                 $syncAddedCount = $syncResult.AddedCount
                 $syncUpdatedCount = $syncResult.UpdatedCount
-                $syncDeletedCount = $syncResult.DeletedCount
-                $syncDeleteCandidateCount = $syncResult.DeleteCandidateCount
 
                 # kintone同期成功後にのみ、処理済みファイルのタイムスタンプを確定・保存
                 foreach ($processedFilePath in $pendingTimestamps.Keys) {
@@ -331,12 +316,7 @@ try {
     # 処理完了ログ（データ同期処理結果も含める）
     $syncInfo = ""
     if ($allExcelData.Count -gt 0) {
-        if ($Config.Api.DeleteDryRun) {
-            $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 削除候補: $syncDeleteCandidateCount 件, 削除(実行): 0 件"
-        }
-        else {
-            $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 削除: $syncDeletedCount 件"
-        }
+        $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件"
     }
 
     $filesInfo = ""
