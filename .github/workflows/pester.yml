@@ -1,0 +1,27 @@
+name: PowerShell tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  pester:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pester 4
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 4.10.1 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 4.10.1 -Force
+          Invoke-Pester -Path .\tests -EnableExit
