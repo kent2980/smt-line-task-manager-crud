@@ -308,10 +308,44 @@ function Get-TargetDataFromApi {
     }
 }
 
+function Get-LineLotNumberValue {
+    <#
+    .SYNOPSIS
+    line_lot_numberを同期キーとして利用できる文字列へ正規化します。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Item
+    )
+
+    if ($null -eq $Item -or -not $Item.PSObject.Properties['line_lot_number']) {
+        return $null
+    }
+
+    $rawValue = $Item.PSObject.Properties['line_lot_number'].Value
+
+    # kintone APIのレスポンスでは { value = "..." } 形式でラップされる。
+    if ($null -ne $rawValue -and $rawValue.PSObject.Properties['value']) {
+        $rawValue = $rawValue.value
+    }
+
+    if ($null -eq $rawValue) {
+        return $null
+    }
+
+    $key = ([string]$rawValue).Trim()
+    if ([string]::IsNullOrWhiteSpace($key)) {
+        return $null
+    }
+
+    return $key
+}
+
 function Compare-DataByLineLotNumber {
     <#
     .SYNOPSIS
-    ライン_ロットナンバーでデータを突合し、追加・更新対象を抽出します。
+    line_lot_numberでデータを突合し、追加・更新対象を抽出します。
     #>
     [CmdletBinding()]
     param(
@@ -328,24 +362,33 @@ function Compare-DataByLineLotNumber {
     )
     
     try {
-        # 更新元データのキー（line_name_lot_number）を作成
+        # 更新元・更新先の双方で、実際にkintoneの一意キーとして使う
+        # line_lot_numberそのものを比較する。
         $sourceKeys = @{}
         foreach ($item in $SourceData) {
-            $key = "$($item.line_name)$($item.lot_number)"
+            $key = Get-LineLotNumberValue -Item $item
+            if ($null -eq $key) {
+                throw "更新元データのline_lot_numberが空です"
+            }
+            if ($sourceKeys.ContainsKey($key)) {
+                throw "更新元データ内でline_lot_numberが重複しています: $key"
+            }
             $sourceKeys[$key] = $item
         }
         
-        # 更新先データのキーを作成（キントーンAPIのレスポンス形式を考慮）
         $targetKeys = @{}
         foreach ($item in $TargetData) {
-            # キントーンAPIのレスポンスは {value: ...} 形式でラップされている
-            $lineName = if ($item.line_name.value) { $item.line_name.value } else { $item.line_name }
-            $lotNumber = if ($item.lot_number.value) { $item.lot_number.value } else { $item.lot_number }
-            $key = "${lineName}${lotNumber}"
+            $key = Get-LineLotNumberValue -Item $item
+            if ($null -eq $key) {
+                throw "更新先データのline_lot_numberが空です"
+            }
+            if ($targetKeys.ContainsKey($key)) {
+                throw "更新先データ内でline_lot_numberが重複しています: $key"
+            }
             $targetKeys[$key] = $item
         }
         
-        # 追加対象（更新元のみ存在）
+        # 追加対象: kintone側に同一line_lot_numberが存在しないレコードのみ。
         $toAdd = @()
         foreach ($key in $sourceKeys.Keys) {
             if (-not $targetKeys.ContainsKey($key)) {
@@ -353,15 +396,13 @@ function Compare-DataByLineLotNumber {
             }
         }
         
-        # 更新対象（両方に存在）
+        # 更新対象: kintone側に同一line_lot_numberが存在するレコード。
         $toUpdate = @()
         foreach ($key in $sourceKeys.Keys) {
             if ($targetKeys.ContainsKey($key)) {
-                # 更新元データと更新先データの両方を含むオブジェクトを作成
                 $sourceItem = $sourceKeys[$key]
                 $targetItem = $targetKeys[$key]
                 
-                # デバッグ: データの存在確認
                 if ($null -eq $sourceItem) {
                     Write-Log -Message "警告: sourceItemがnullです（キー: $key）" -LogPath $LogPath -LogLevel "WARNING"
                 }
@@ -597,4 +638,3 @@ function Invoke-UpdateData {
 
 # モジュールをエクスポート
 Export-ModuleMember -Function Sync-DataWithApi, Get-TargetDataFromApi, Compare-DataByLineLotNumber, Invoke-AddData, Invoke-UpdateData
-
