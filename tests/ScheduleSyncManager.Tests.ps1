@@ -80,6 +80,6 @@ Describe 'Get-AffectedScheduleGroups' {
 
         $groups.Count | Should Be 1
         $keys | Should Contain '2026-09-11|GC01'
-        $keys | Should Not Contain '2026-09-09|GC01'
+        ($keys -contains '2026-09-09|GC01') | Should Be $false
     }
 }
