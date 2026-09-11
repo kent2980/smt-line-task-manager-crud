@@ -85,6 +85,37 @@ Describe 'Get-AffectedScheduleGroups' {
 }
 
 InModuleScope ScheduleSyncManager {
+    function Get-ApiData {
+        param(
+            [string]$Uri,
+            [string]$Method,
+            [hashtable]$Headers,
+            [int]$TimeoutSec
+        )
+
+        throw 'test stub: Get-ApiData should be mocked before use'
+    }
+
+    Describe 'Get-App86ScheduleRecords' {
+        It 'filters out records whose lot_number is empty' {
+            $script:CapturedRequestUri = $null
+            Mock Get-ApiData {
+                param($Uri, $Method, $Headers, $TimeoutSec)
+                $script:CapturedRequestUri = $Uri
+                [PSCustomObject]@{ records = @() }
+            }
+
+            $records = @(Get-App86ScheduleRecords `
+                -ApiUri 'https://example.cybozu.com/k/v1/records.json' `
+                -ApiHeaders @{} `
+                -AppId 86)
+
+            $records.Count | Should Be 0
+            $decoded = [System.Uri]::UnescapeDataString($script:CapturedRequestUri)
+            $decoded | Should Match 'lot_number != ""'
+        }
+    }
+
     Describe 'Schedule update payload' {
         It 'keeps every table row and writable source value while omitting the Calc field' {
             $record = [PSCustomObject]@{

@@ -21,6 +21,8 @@ Excelを日程の正本とし、既存の `sub_schedule` を最新の日程で�
 
 `生産時間` はCalcフィールドなのでAPIから直接更新しません。Excel同期完了後にApp86を再GETし、kintoneが再計算した最新値を使用します。
 
+`lot_number` が空のExcel行は異常データとして同期対象から除外し、App86へ新規作成・更新しません。既にApp86へ存在する `lot_number` 空レコードも予定再計算対象から除外します。
+
 ## 計算ルール
 
 予定は `sub_schedule_date × line_name` ごとに独立して計算します。
@@ -80,6 +82,8 @@ Excelは読みません。現在App86に登録されている `sub_schedule` と
 
 ## 注意事項
 
+- `lot_number` が空のExcel行は新規作成・更新対象外です。
+- App86に残っている `lot_number` 空レコードは削除せず、そのまま保持して予定再計算からも除外します。
 - `record_type = SETTING` のレコードは予定計算対象外です。
 - `record_type` が空欄の既存レコードは生産レコードとして扱います。
 - 予定時刻のPUTでは全 `sub_schedule` 行IDを含め、予定計算対象外の行を誤って削除しないようにします。

@@ -1,6 +1,25 @@
 ﻿# ExcelReader.psm1
 # Excelファイルを読み取るモジュール（テンプレート）
 
+function ConvertTo-SyncLotNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $normalized = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $null
+    }
+
+    return $normalized
+}
+
 function Read-ExcelData {
     <#
     .SYNOPSIS
@@ -14,7 +33,7 @@ function Read-ExcelData {
     読み取る.xlsxファイルのパス
     
     .PARAMETER WorksheetName
-    読み取るワークシート名（省略時は最初のシート）
+    ワークシート名（省略時は最初のシート）
     
     .EXAMPLE
     $data = Read-ExcelData -XlsxPath "C:\data\file.xlsx"
@@ -86,6 +105,14 @@ function Read-ExcelData {
 
                 # モデル名が空白の場合はスキップ
                 if ([string]::IsNullOrEmpty($modelName)) {
+                    continue
+                }
+
+                # lot_numberが空の行は異常データとして同期対象から除外する。
+                # line_lot_numberを「ライン名だけ」で生成して誤登録・誤更新しないため、ここで早期除外する。
+                $lotNumber = ConvertTo-SyncLotNumber -Value $lotNumber
+                if ($null -eq $lotNumber) {
+                    Write-Warning "lot_numberが空のため同期対象から除外します: file=$fileName, page=$page, row=$row"
                     continue
                 }
 
@@ -176,4 +203,3 @@ function Read-ExcelData {
 
 # モジュールをエクスポート
 Export-ModuleMember -Function Read-ExcelData
-
