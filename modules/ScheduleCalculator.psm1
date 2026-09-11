@@ -269,6 +269,9 @@ function Get-App86ScheduleCalculations {
     Groupsを省略した場合は全予定を厳密に検証して計算します。
     Groupsを指定した場合は対象グループに含まれる行だけを厳密に検証し、無関係な過去データの不備で
     通常同期の部分再計算が停止しないようにします。
+
+    生産時間Calcには切替時間が含まれているため、予定時刻の作業時間には生産時間のみを使用します。
+    sub_change_timeは同期・保持しますが、この計算では加算しません。
     #>
     [CmdletBinding()]
     param(
@@ -364,10 +367,6 @@ function Get-App86ScheduleCalculations {
             $productionHours = ConvertTo-HourValue `
                 -Value (Get-FieldValue -Container $rowValue -FieldName '生産時間') `
                 -Context "レコードID $recordId / $date / 生産時間"
-            $changeHours = ConvertTo-HourValue `
-                -Value (Get-FieldValue -Container $rowValue -FieldName 'sub_change_time') `
-                -Context "レコードID $recordId / $date / sub_change_time" `
-                -AllowEmpty
 
             $item = [PSCustomObject]@{
                 RecordId        = $recordId
@@ -379,7 +378,6 @@ function Get-App86ScheduleCalculations {
                 LineName        = $lineName
                 RecordIndex     = $recordIndex
                 ProductionHours = $productionHours
-                ChangeHours     = $changeHours
             }
 
             if (-not $itemsByGroup.ContainsKey($groupKey)) {
@@ -409,7 +407,7 @@ function Get-App86ScheduleCalculations {
             -Minute $script:ScheduleStartMinute
 
         foreach ($item in $groupItems) {
-            $workMinutes = ($item.ProductionHours + $item.ChangeHours) * 60.0
+            $workMinutes = $item.ProductionHours * 60.0
             $startAt = $cursor
             $advance = Add-WorkDurationWithBreaks `
                 -StartAt $startAt `
@@ -426,7 +424,6 @@ function Get-App86ScheduleCalculations {
                 RecordIndex     = $item.RecordIndex
                 RowPosition     = $item.RowPosition
                 ProductionHours = $item.ProductionHours
-                ChangeHours     = $item.ChangeHours
                 StartAt         = $startAt
                 EndAt           = $advance.EndAt
                 BreakMinutes    = $advance.BreakMinutes

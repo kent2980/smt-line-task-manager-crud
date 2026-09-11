@@ -61,7 +61,8 @@ Describe 'App86 schedule calculation' {
         $date = '2026-09-11'
         $records = @(
             New-ScheduleRecord -Id '1' -Index 1 -Rows @(
-                New-ScheduleRow -Id 'row-1' -Date $date -ProductionHours '1.0 H' -ChangeHours '0.5'
+                # 生産時間1.5Hには切替0.5Hが含まれている。
+                New-ScheduleRow -Id 'row-1' -Date $date -ProductionHours '1.5 H' -ChangeHours '0.5'
             )
             New-ScheduleRecord -Id '2' -Index 2 -Rows @(
                 New-ScheduleRow -Id 'row-2' -Date $date -ProductionHours '1.0' -ChangeHours ''
@@ -85,6 +86,29 @@ Describe 'App86 schedule calculation' {
         $result[2].StartAt.ToString('HH:mm') | Should Be '11:10'
         $result[2].EndAt.ToString('HH:mm') | Should Be '13:20'
         $result[2].BreakMinutes | Should Be 40
+    }
+
+    It 'does not add sub_change_time separately because production time already includes it' {
+        $record = New-ScheduleRecord -Id '1' -Index 1 -Rows @(
+            New-ScheduleRow -Id 'row-1' -Date '2026-09-11' -ProductionHours '1.5' -ChangeHours '0.5'
+        )
+
+        $result = @(Get-App86ScheduleCalculations -Records @($record))
+
+        $result[0].StartAt.ToString('HH:mm') | Should Be '08:30'
+        $result[0].EndAt.ToString('HH:mm') | Should Be '10:10'
+        $result[0].BreakMinutes | Should Be 10
+    }
+
+    It 'does not depend on sub_change_time format when calculating schedule time' {
+        $record = New-ScheduleRecord -Id '1' -Index 1 -Rows @(
+            New-ScheduleRow -Id 'row-1' -Date '2026-09-11' -ProductionHours '1.0' -ChangeHours 'invalid'
+        )
+
+        $result = @(Get-App86ScheduleCalculations -Records @($record))
+
+        $result.Count | Should Be 1
+        $result[0].EndAt.ToString('HH:mm') | Should Be '09:30'
     }
 
     It 'includes a break when the nominal end exactly equals the break start' {
@@ -167,7 +191,7 @@ Describe 'App86 schedule calculation' {
         $result[0].RowId | Should Be 'row-target'
     }
 
-    It 'still rejects malformed data during a full recalculation' {
+    It 'still rejects malformed production time during a full recalculation' {
         $records = @(
             New-ScheduleRecord -Id '2' -Index '' -Rows @(
                 New-ScheduleRow -Id 'row-invalid' -Date '2026-09-01' -ProductionHours 'invalid' -ChangeHours '0'
