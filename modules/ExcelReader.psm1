@@ -8,7 +8,7 @@ function Read-ExcelData {
     
     .DESCRIPTION
     ImportExcelモジュールを使用してExcelファイルを読み込みます。
-    この関数はテンプレートです。実際の読み取り処理は実装してください。
+    この関数はテンプレートです。実際の読み取り処理を実装してください。
     
     .PARAMETER XlsxPath
     読み取る.xlsxファイルのパス
@@ -99,6 +99,7 @@ function Read-ExcelData {
                 $tact = $excelPackage.Workbook.Worksheets[1].Cells["AK$row"].value
                 $utilizationRate = $excelPackage.Workbook.Worksheets[1].Cells["AL$row"].value
                 $hourProductionVolume = $excelPackage.Workbook.Worksheets[1].Cells["AL$rowDown"].value
+                # AP列の切替時間は、このExcel行から生成する日別予定の正本として扱う。
                 $changeTime = $excelPackage.Workbook.Worksheets[1].Cells["AP$row"].value
                 $boardDivision = $excelPackage.Workbook.Worksheets[1].Cells["AQ$row"].value
                 $inputQuantity = $excelPackage.Workbook.Worksheets[1].Cells["AQ$rowDown"].value
@@ -119,11 +120,13 @@ function Read-ExcelData {
                             sub_schedule_date = $convertedDate
                             sub_lot_volume    = $columnValue
                             sub_index         = $index
+                            sub_change_time   = $changeTime
                         }
                     }
                 }
 
                 # lot_numberが既に存在する場合は、sub_scheduleを既存のものに追加
+                # 追加行はそれぞれの取得元Excel行のsub_change_timeを保持する。
                 if ($data | Where-Object { $_.lot_number -eq $lotNumber }) {
                     $data | Where-Object { $_.lot_number -eq $lotNumber } | ForEach-Object {
                         $_.sub_schedule += $subSchedule
