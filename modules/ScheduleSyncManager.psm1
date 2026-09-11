@@ -97,7 +97,7 @@ function Get-App86ScheduleRecords {
     $offset = 0
 
     do {
-        $query = "lot_number != \"\" order by index asc, `$id asc limit $BatchSize offset $offset"
+        $query = 'lot_number != "" order by index asc, $id asc limit {0} offset {1}' -f $BatchSize, $offset
         $encodedApp = [System.Uri]::EscapeDataString([string]$AppId)
         $encodedQuery = [System.Uri]::EscapeDataString($query)
         $requestUri = "{0}?app={1}&query={2}&totalCount=true" -f $ApiUri, $encodedApp, $encodedQuery
