@@ -14,7 +14,7 @@ function Read-ExcelData {
     読み取る.xlsxファイルのパス
     
     .PARAMETER WorksheetName
-    読み取るワークシート名（省略時は最初のシート）
+    ワークシート名（省略時は最初のシート）
     
     .EXAMPLE
     $data = Read-ExcelData -XlsxPath "C:\data\file.xlsx"
@@ -88,6 +88,15 @@ function Read-ExcelData {
                 if ([string]::IsNullOrEmpty($modelName)) {
                     continue
                 }
+
+                # lot_numberが空の行は異常データとして同期対象から除外する。
+                # line_lot_numberを「ライン名だけ」で生成して誤登録・誤更新しないため、ここで早期除外する。
+                $lotNumberText = if ($null -eq $lotNumber) { '' } else { ([string]$lotNumber).Trim() }
+                if ([string]::IsNullOrWhiteSpace($lotNumberText)) {
+                    Write-Warning "lot_numberが空のため同期対象から除外します: file=$fileName, page=$page, row=$row"
+                    continue
+                }
+                $lotNumber = $lotNumberText
 
                 $line_name = $fileName
                 $boradName = $excelPackage.Workbook.Worksheets[1].Cells["B$rowDown"].value
@@ -176,4 +185,3 @@ function Read-ExcelData {
 
 # モジュールをエクスポート
 Export-ModuleMember -Function Read-ExcelData
-
