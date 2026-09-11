@@ -70,7 +70,10 @@ function Get-ScheduleGroupMapKey {
 function Get-App86ScheduleRecords {
     <#
     .SYNOPSIS
-    App86の全レコードをindex、$id順で取得します。
+    App86の有効な生産レコードをindex、$id順で取得します。
+
+    .DESCRIPTION
+    lot_numberが空のレコードは異常データとして予定再計算対象から除外します。
     #>
     [CmdletBinding()]
     param(
@@ -94,7 +97,7 @@ function Get-App86ScheduleRecords {
     $offset = 0
 
     do {
-        $query = "order by index asc, `$id asc limit $BatchSize offset $offset"
+        $query = "lot_number != \"\" order by index asc, `$id asc limit $BatchSize offset $offset"
         $encodedApp = [System.Uri]::EscapeDataString([string]$AppId)
         $encodedQuery = [System.Uri]::EscapeDataString($query)
         $requestUri = "{0}?app={1}&query={2}&totalCount=true" -f $ApiUri, $encodedApp, $encodedQuery
