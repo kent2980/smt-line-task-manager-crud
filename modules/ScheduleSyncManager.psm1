@@ -3,6 +3,15 @@
 
 $script:ScheduleUpdateBatchSize = 100
 $script:ScheduleFetchBatchSize = 500
+$script:WritableScheduleFields = @(
+    'sub_schedule_date',
+    'sub_lot_volume',
+    'sub_index',
+    'sub_change_time',
+    '予定開始日時',
+    '予定終了日時',
+    '休憩時間'
+)
 
 function Ensure-ScheduleCalculatorLoaded {
     if (Get-Command Get-App86ScheduleCalculations -ErrorAction SilentlyContinue) {
@@ -47,6 +56,15 @@ function Get-KintoneFieldValue {
     }
 
     return $value
+}
+
+function Get-ScheduleGroupMapKey {
+    param(
+        [string]$Date,
+        [string]$LineName
+    )
+
+    return "$Date|$LineName"
 }
 
 function Get-App86ScheduleRecords {
@@ -167,19 +185,41 @@ function Get-AffectedScheduleGroups {
         $sourceKey = [string](Get-KintoneFieldValue -Container $source -FieldName 'line_lot_number')
 
         foreach ($group in @(Get-SourceScheduleGroups -Item $source)) {
-            $mapKey = "$($group.Date)`u001f$($group.LineName)"
+            $mapKey = Get-ScheduleGroupMapKey -Date $group.Date -LineName $group.LineName
             $groupMap[$mapKey] = $group
         }
 
+        # 同一レコードの日程再割り付けで旧日付から予定が消える場合、その旧グループも再計算する。
         if (-not [string]::IsNullOrWhiteSpace($sourceKey) -and $targetByKey.ContainsKey($sourceKey.Trim())) {
             foreach ($group in @(Get-SourceScheduleGroups -Item $targetByKey[$sourceKey.Trim()])) {
-                $mapKey = "$($group.Date)`u001f$($group.LineName)"
+                $mapKey = Get-ScheduleGroupMapKey -Date $group.Date -LineName $group.LineName
                 $groupMap[$mapKey] = $group
             }
         }
     }
 
     return @($groupMap.Values)
+}
+
+function Copy-WritableScheduleRowValues {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$RowValue
+    )
+
+    $payload = [ordered]@{}
+    foreach ($fieldCode in $script:WritableScheduleFields) {
+        if ($null -eq $RowValue.PSObject.Properties[$fieldCode]) {
+            continue
+        }
+
+        $payload[$fieldCode] = [PSCustomObject]@{
+            value = Get-KintoneFieldValue -Container $RowValue -FieldName $fieldCode
+        }
+    }
+
+    # Calc「生産時間」は読み取り専用なので意図的にpayloadへ含めない。
+    return $payload
 }
 
 function ConvertTo-ScheduleUpdateRecords {
@@ -223,7 +263,9 @@ function ConvertTo-ScheduleUpdateRecords {
                 throw "レコードID $recordId のsub_schedule行IDを取得できません。"
             }
 
-            $rowPayloadValue = [ordered]@{}
+            $rowValue = $row.value
+            $rowPayloadValue = Copy-WritableScheduleRowValues -RowValue $rowValue
+
             if ($rowCalculations.ContainsKey($rowId)) {
                 $calculation = $rowCalculations[$rowId]
                 $rowPayloadValue['予定開始日時'] = [PSCustomObject]@{
@@ -237,7 +279,7 @@ function ConvertTo-ScheduleUpdateRecords {
                 }
             }
 
-            # テーブルをPUTする場合、既存行を落とさないよう全行IDを必ず含める。
+            # テーブル全体をPUTするため、計算対象外の行もrow IDと現在値を含めて保持する。
             $payloadRows += [PSCustomObject]@{
                 id    = $rowId
                 value = [PSCustomObject]$rowPayloadValue
