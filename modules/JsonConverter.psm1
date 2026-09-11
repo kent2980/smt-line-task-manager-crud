@@ -275,6 +275,7 @@ function ConvertTo-WrappedJsonObject {
                                 sub_schedule_date = [PSCustomObject]@{value = $subItem.sub_schedule_date }
                                 sub_lot_volume    = [PSCustomObject]@{value = $subItem.sub_lot_volume }
                                 sub_index         = [PSCustomObject]@{value = $subItem.sub_index }
+                                sub_change_time   = [PSCustomObject]@{value = $subItem.sub_change_time }
                             }
                         }
                         $wrappedSubSchedule += $wrappedSubItem
