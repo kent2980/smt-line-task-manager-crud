@@ -20,6 +20,35 @@ function ConvertTo-SyncLotNumber {
     return $normalized
 }
 
+function Get-SubScheduleChangeTime {
+    <#
+    .SYNOPSIS
+    日別予定へ登録する切替時間を決定します。
+
+    .DESCRIPTION
+    同一Excel行で生産台数セルが左隣の列から連続している場合は、同じ生産指図の
+    日跨ぎ継続とみなし、右側の予定には切替時間0を登録します。
+    連続区間の先頭、または前回予定セルとの間に空列がある場合はAP列の切替時間を使用します。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$ChangeTime,
+
+        [Parameter(Mandatory = $true)]
+        [int]$CurrentColumn,
+
+        [Parameter(Mandatory = $false)]
+        [Nullable[int]]$PreviousScheduledColumn
+    )
+
+    if ($null -ne $PreviousScheduledColumn -and $CurrentColumn -eq ($PreviousScheduledColumn.Value + 1)) {
+        return 0
+    }
+
+    return $ChangeTime
+}
+
 function Read-ExcelData {
     <#
     .SYNOPSIS
@@ -126,13 +155,15 @@ function Read-ExcelData {
                 $tact = $excelPackage.Workbook.Worksheets[1].Cells["AK$row"].value
                 $utilizationRate = $excelPackage.Workbook.Worksheets[1].Cells["AL$row"].value
                 $hourProductionVolume = $excelPackage.Workbook.Worksheets[1].Cells["AL$rowDown"].value
-                # AP列の切替時間は、このExcel行から生成する日別予定の正本として扱う。
+                # AP列の切替時間は、このExcel行から生成する日別予定の基本値として扱う。
+                # 同一行で日別台数セルが右隣へ連続する場合は、2日目以降の切替時間を0にする。
                 $changeTime = $excelPackage.Workbook.Worksheets[1].Cells["AP$row"].value
                 $boardDivision = $excelPackage.Workbook.Worksheets[1].Cells["AQ$row"].value
                 $inputQuantity = $excelPackage.Workbook.Worksheets[1].Cells["AQ$rowDown"].value
                 $tanaban = $excelPackage.Workbook.Worksheets[1].Cells["H$row"].value
                 
                 $subSchedule = @()
+                $previousScheduledColumn = $null
                 # I列からAE列をループ処理
                 for ($column = 9; $column -le 31; $column++) {
                     
@@ -143,17 +174,24 @@ function Read-ExcelData {
                     
                     # 値が空白でない場合はサブスケジュールに追加
                     if (-not [string]::IsNullOrEmpty($columnValue)) {
+                        $dailyChangeTime = Get-SubScheduleChangeTime `
+                            -ChangeTime $changeTime `
+                            -CurrentColumn $column `
+                            -PreviousScheduledColumn $previousScheduledColumn
+
                         $subSchedule += [PSCustomObject]@{
                             sub_schedule_date = $convertedDate
                             sub_lot_volume    = $columnValue
                             sub_index         = $index
-                            sub_change_time   = $changeTime
+                            sub_change_time   = $dailyChangeTime
                         }
+
+                        $previousScheduledColumn = $column
                     }
                 }
 
                 # lot_numberが既に存在する場合は、sub_scheduleを既存のものに追加
-                # 追加行はそれぞれの取得元Excel行のsub_change_timeを保持する。
+                # 追加行はそれぞれの取得元Excel行の日別sub_change_timeを保持する。
                 if ($data | Where-Object { $_.lot_number -eq $lotNumber }) {
                     $data | Where-Object { $_.lot_number -eq $lotNumber } | ForEach-Object {
                         $_.sub_schedule += $subSchedule
