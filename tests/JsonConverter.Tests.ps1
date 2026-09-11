@@ -19,13 +19,15 @@ function New-TestRecord {
 function New-TestSubSchedule {
     param(
         [string]$Date,
-        [int]$Index
+        [int]$Index,
+        [double]$ChangeTime = 0.5
     )
 
     [PSCustomObject]@{
         sub_schedule_date = $Date
         sub_lot_volume    = 1
         sub_index         = $Index
+        sub_change_time   = $ChangeTime
     }
 }
 
@@ -103,5 +105,20 @@ Describe 'JsonConverter index selection' {
         $json.records[0].index.value | Should Be 7
         $wrapped.index.value | Should Be 7
         $record.index | Should Be 99
+    }
+
+    It 'serializes the source-row daily change time into sub_schedule' {
+        $record = New-TestRecord -SubSchedule @(
+            New-TestSubSchedule -Date '2026-09-11' -Index 9 -ChangeTime 0.5
+            New-TestSubSchedule -Date '2026-09-12' -Index 9 -ChangeTime 1.0
+        )
+
+        $wrapped = ConvertTo-WrappedJsonObject -InputObject $record
+        $json = ConvertTo-JsonData -AppId 86 -InputObject $record -Depth 20 | ConvertFrom-Json
+
+        $wrapped.sub_schedule.value[0].value.sub_change_time.value | Should Be 0.5
+        $wrapped.sub_schedule.value[1].value.sub_change_time.value | Should Be 1.0
+        $json.records[0].sub_schedule.value[0].value.sub_change_time.value | Should Be 0.5
+        $json.records[0].sub_schedule.value[1].value.sub_change_time.value | Should Be 1.0
     }
 }
