@@ -1,14 +1,3 @@
-function Get-ApiData {
-    param(
-        [string]$Uri,
-        [string]$Method,
-        [hashtable]$Headers,
-        [int]$TimeoutSec
-    )
-
-    throw 'test stub: Get-ApiData should be mocked before use'
-}
-
 $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'modules\ScheduleSyncManager.psm1'
 Import-Module $modulePath -Force
 
@@ -96,6 +85,17 @@ Describe 'Get-AffectedScheduleGroups' {
 }
 
 InModuleScope ScheduleSyncManager {
+    function Get-ApiData {
+        param(
+            [string]$Uri,
+            [string]$Method,
+            [hashtable]$Headers,
+            [int]$TimeoutSec
+        )
+
+        throw 'test stub: Get-ApiData should be mocked before use'
+    }
+
     Describe 'Get-App86ScheduleRecords' {
         It 'filters out records whose lot_number is empty' {
             $script:CapturedRequestUri = $null
