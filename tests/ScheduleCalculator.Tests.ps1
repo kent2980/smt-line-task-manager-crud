@@ -26,7 +26,7 @@ function New-ScheduleRecord {
     param(
         [string]$Id,
         [string]$LineName = 'GC01',
-        [int]$Index,
+        [object]$Index,
         [array]$Rows,
         [string]$RecordType = ''
     )
@@ -148,5 +148,32 @@ Describe 'App86 schedule calculation' {
         $result.Count | Should Be 1
         $result[0].Date | Should Be '2026-09-12'
         $result[0].StartAt.ToString('HH:mm') | Should Be '08:30'
+    }
+
+    It 'ignores unrelated malformed legacy rows during a partial recalculation' {
+        $records = @(
+            New-ScheduleRecord -Id '1' -Index 1 -Rows @(
+                New-ScheduleRow -Id 'row-target' -Date '2026-09-12' -ProductionHours '1' -ChangeHours '0'
+            )
+            New-ScheduleRecord -Id '2' -Index '' -Rows @(
+                New-ScheduleRow -Id 'row-legacy' -Date '2026-09-01' -ProductionHours 'invalid' -ChangeHours 'invalid'
+            )
+        )
+        $groups = @([PSCustomObject]@{ Date = '2026-09-12'; LineName = 'GC01' })
+
+        $result = @(Get-App86ScheduleCalculations -Records $records -Groups $groups)
+
+        $result.Count | Should Be 1
+        $result[0].RowId | Should Be 'row-target'
+    }
+
+    It 'still rejects malformed data during a full recalculation' {
+        $records = @(
+            New-ScheduleRecord -Id '2' -Index '' -Rows @(
+                New-ScheduleRow -Id 'row-invalid' -Date '2026-09-01' -ProductionHours 'invalid' -ChangeHours '0'
+            )
+        )
+
+        { Get-App86ScheduleCalculations -Records $records } | Should Throw
     }
 }
