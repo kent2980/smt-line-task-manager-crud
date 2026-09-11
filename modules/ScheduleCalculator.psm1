@@ -182,7 +182,7 @@ function Add-WorkDurationWithBreaks {
             continue
         }
 
-        # 何らかの理由で開始時刻が休憩内に入っている場合は、残りの休憩を先に消化する。
+        # 前工程の終了などで休憩内から始まる場合は、残りの休憩を先に消化する。
         if ($cursor -ge $breakStart -and $cursor -lt $breakEnd) {
             $delay = ($breakEnd - $cursor).TotalMinutes
             $breakMinutes += [int][Math]::Round($delay)
@@ -203,7 +203,7 @@ function Add-WorkDurationWithBreaks {
             }
 
             if ([Math]::Abs($remainingMinutes - $availableMinutes) -le $epsilon) {
-                # 終了予定が休憩開始と完全一致した場合も、その休憩を当該予定に含める。
+                # 名目終了が休憩開始と完全一致した場合も、その休憩を当該予定に含める。
                 $cursor = $breakEnd
                 $remainingMinutes = 0
                 $breakMinutes += [int][Math]::Round(($breakEnd - $breakStart).TotalMinutes)
@@ -232,7 +232,8 @@ function Get-GroupKey {
         [string]$LineName
     )
 
-    return "$Date`u001f$LineName"
+    # 日付とライン名はいずれもApp86の管理値であり、区切りには通常値に含まれないパイプを使う。
+    return "$Date|$LineName"
 }
 
 function Get-SelectedGroupKeySet {
@@ -252,6 +253,7 @@ function Get-SelectedGroupKeySet {
         if ([string]::IsNullOrWhiteSpace($date) -or [string]::IsNullOrWhiteSpace($lineName)) {
             continue
         }
+
         $set[(Get-GroupKey -Date $date.Trim() -LineName $lineName.Trim())] = $true
     }
 
@@ -262,6 +264,11 @@ function Get-App86ScheduleCalculations {
     <#
     .SYNOPSIS
     App86レコードを日付×ラインでグループ化し、予定開始・終了・休憩時間を計算します。
+
+    .DESCRIPTION
+    Groupsを省略した場合は全予定を厳密に検証して計算します。
+    Groupsを指定した場合は対象グループに含まれる行だけを厳密に検証し、無関係な過去データの不備で
+    通常同期の部分再計算が停止しないようにします。
     #>
     [CmdletBinding()]
     param(
@@ -274,6 +281,7 @@ function Get-App86ScheduleCalculations {
     )
 
     $selectedGroupKeys = Get-SelectedGroupKeySet -Groups $Groups
+    $isPartialCalculation = $null -ne $selectedGroupKeys
     $itemsByGroup = @{}
 
     foreach ($record in $Records) {
@@ -287,44 +295,70 @@ function Get-App86ScheduleCalculations {
             continue
         }
 
-        $recordId = [string](Get-FieldValue -Container $record -FieldName '$id')
-        if ([string]::IsNullOrWhiteSpace($recordId)) {
-            throw '予定計算対象レコードの$idを取得できません。'
-        }
-
         $lineName = [string](Get-FieldValue -Container $record -FieldName 'line_name')
         if ([string]::IsNullOrWhiteSpace($lineName)) {
-            throw "レコードID $recordId の line_name が空です。"
+            if ($isPartialCalculation) {
+                continue
+            }
+            $recordIdForError = [string](Get-FieldValue -Container $record -FieldName '$id')
+            throw "レコードID $recordIdForError の line_name が空です。"
         }
         $lineName = $lineName.Trim()
 
-        $recordIndex = ConvertTo-SortNumber `
-            -Value (Get-FieldValue -Container $record -FieldName 'index') `
-            -Context "レコードID $recordId の index"
-
+        $recordId = [string](Get-FieldValue -Container $record -FieldName '$id')
         $revision = [string](Get-FieldValue -Container $record -FieldName '$revision')
+        $recordIndex = $null
+        $recordIdNumber = $null
         $rowPosition = 0
 
         foreach ($row in @($rows)) {
+            $rowValue = $row.value
+            $date = [string](Get-FieldValue -Container $rowValue -FieldName 'sub_schedule_date')
+
+            if ([string]::IsNullOrWhiteSpace($date)) {
+                if ($isPartialCalculation) {
+                    $rowPosition++
+                    continue
+                }
+                throw "レコードID $recordId / テーブル位置 $rowPosition の sub_schedule_date が空です。"
+            }
+            $date = $date.Trim()
+
+            $groupKey = Get-GroupKey -Date $date -LineName $lineName
+            if ($isPartialCalculation -and -not $selectedGroupKeys.ContainsKey($groupKey)) {
+                $rowPosition++
+                continue
+            }
+
+            # ここからは実際の計算対象行なので、必要な識別子・値を厳密に検証する。
+            if ([string]::IsNullOrWhiteSpace($recordId)) {
+                throw '予定計算対象レコードの$idを取得できません。'
+            }
+
             $rowId = [string](Get-FieldValue -Container $row -FieldName 'id')
             if ([string]::IsNullOrWhiteSpace($rowId)) {
                 throw "レコードID $recordId の sub_schedule 行IDを取得できません。"
             }
 
-            $rowValue = $row.value
-            $date = [string](Get-FieldValue -Container $rowValue -FieldName 'sub_schedule_date')
-            if ([string]::IsNullOrWhiteSpace($date)) {
-                throw "レコードID $recordId / 行ID $rowId の sub_schedule_date が空です。"
-            }
-            $date = $date.Trim()
-
-            # 日付書式はグループ対象外であっても検証し、壊れた予定を見逃さない。
             New-JstDateTimeOffset -Date $date -Hour 0 -Minute 0 | Out-Null
 
-            $groupKey = Get-GroupKey -Date $date -LineName $lineName
-            if ($null -ne $selectedGroupKeys -and -not $selectedGroupKeys.ContainsKey($groupKey)) {
-                $rowPosition++
-                continue
+            if ($null -eq $recordIndex) {
+                $recordIndex = ConvertTo-SortNumber `
+                    -Value (Get-FieldValue -Container $record -FieldName 'index') `
+                    -Context "レコードID $recordId の index"
+            }
+
+            if ($null -eq $recordIdNumber) {
+                $parsedRecordId = 0.0
+                $recordIdNumber = [double]::MaxValue
+                if ([double]::TryParse(
+                    $recordId,
+                    [System.Globalization.NumberStyles]::Float,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$parsedRecordId
+                )) {
+                    $recordIdNumber = $parsedRecordId
+                }
             }
 
             $productionHours = ConvertTo-HourValue `
@@ -334,14 +368,6 @@ function Get-App86ScheduleCalculations {
                 -Value (Get-FieldValue -Container $rowValue -FieldName 'sub_change_time') `
                 -Context "レコードID $recordId / $date / sub_change_time" `
                 -AllowEmpty
-
-            $recordIdNumber = [double]::MaxValue
-            [double]::TryParse(
-                $recordId,
-                [System.Globalization.NumberStyles]::Float,
-                [System.Globalization.CultureInfo]::InvariantCulture,
-                [ref]$recordIdNumber
-            ) | Out-Null
 
             $item = [PSCustomObject]@{
                 RecordId        = $recordId
