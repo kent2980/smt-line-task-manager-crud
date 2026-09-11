@@ -42,7 +42,7 @@ function Get-SubScheduleChangeTime {
         [Nullable[int]]$PreviousScheduledColumn
     )
 
-    if ($null -ne $PreviousScheduledColumn -and $CurrentColumn -eq ($PreviousScheduledColumn.Value + 1)) {
+    if ($null -ne $PreviousScheduledColumn -and $CurrentColumn -eq ([int]$PreviousScheduledColumn + 1)) {
         return 0
     }
 
