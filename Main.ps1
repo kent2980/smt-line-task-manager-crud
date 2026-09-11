@@ -1,103 +1,153 @@
 ﻿# Main.ps1
 # メイン処理スクリプト
 
-# UTF-8エンコーディングを設定
+[CmdletBinding()]
+param(
+    # タイムスタンプ・日次同期済み判定を無視して全Excelを再読込し、全対象レコードを更新する。
+    [Parameter(Mandatory = $false)]
+    [switch]$ForceFullSync,
+
+    # Excel同期を行わず、App86に現在登録されている予定だけを全件再計算する。
+    [Parameter(Mandatory = $false)]
+    [switch]$RecalculateScheduleOnly
+)
+
+if ($ForceFullSync -and $RecalculateScheduleOnly) {
+    throw '-ForceFullSync と -RecalculateScheduleOnly は同時に指定できません。'
+}
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# スクリプトのディレクトリを取得
 $scriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
-$modulesPath = Join-Path $scriptDirectory "modules"
+$modulesPath = Join-Path $scriptDirectory 'modules'
+$configPath = Join-Path $scriptDirectory 'Config.ps1'
 
-# 設定ファイルを読み込み
-$configPath = Join-Path $scriptDirectory "Config.ps1"
-if (Test-Path $configPath) {
-    $Config = . $configPath
-}
-else {
+if (-not (Test-Path $configPath)) {
     Write-Error "設定ファイルが見つかりません: $configPath"
     exit 1
 }
+$Config = . $configPath
 
-# モジュールを読み込み
 $modules = @(
-    "Utils",
-    "TimestampManager",
-    "ExcelConverter",
-    "ExcelReader",
-    "JsonConverter",
-    "ApiClient",
-    "Logger",
-    "EmailSender",
-    "DataSyncManager"
+    'Utils',
+    'TimestampManager',
+    'ExcelConverter',
+    'ExcelReader',
+    'JsonConverter',
+    'ApiClient',
+    'Logger',
+    'EmailSender',
+    'DataSyncManager',
+    'ScheduleCalculator',
+    'ScheduleSyncManager'
 )
 
 foreach ($module in $modules) {
     $modulePath = Join-Path $modulesPath "$module.psm1"
-    if (Test-Path $modulePath) {
-        Import-Module $modulePath -Force
-        Write-Verbose "モジュールを読み込みました: $module"
-    }
-    else {
+    if (-not (Test-Path $modulePath)) {
         Write-Error "モジュールが見つかりません: $modulePath"
         exit 1
     }
+    Import-Module $modulePath -Force
+    Write-Verbose "モジュールを読み込みました: $module"
 }
 
-# ロガーを初期化
 $logPath = Initialize-Logger -LogDirectory $Config.LogDirectory
-
-# タイムスタンプを読み込む
 $timestamps = Load-Timestamps -TimestampFilePath $Config.TimestampFile -Verbose
 
-# エラー情報を保持する変数
 $errorCount = 0
 $errorDetails = @()
 $processedCount = 0
 $skippedCount = 0
-    
-# データ同期処理結果を保持する変数
 $syncAddedCount = 0
 $syncUpdatedCount = 0
-
-# 処理されたファイル名を保持する配列
+$scheduleUpdatedRecordCount = 0
+$scheduleUpdatedRowCount = 0
 $processedFiles = @()
-
-# kintone同期成功後に確定するファイルタイムスタンプを保持するハッシュテーブル
 $pendingTimestamps = @{}
-
-# 全Excelデータを蓄積する配列
 $allExcelData = @()
 
-# 一時ディレクトリ
 $tempDir = $Config.DataDirectoryTemp
-
-if (-not (Test-Path $tempDir)) {
-    # ディレクトリが存在しない場合は作成
-    New-Item -ItemType Directory -Path $tempDir
-}
-
-# xlsx変換後のディレクトリ
 $xlsxDir = $Config.DataDirectoryXlsx
-
-
+if (-not (Test-Path $tempDir)) {
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+}
 if (-not (Test-Path $xlsxDir)) {
-    # ディレクトリが存在しない場合は作成
-    New-Item -ItemType Directory -Path $xlsxDir
+    New-Item -ItemType Directory -Path $xlsxDir -Force | Out-Null
 }
 
-# 日次全件同期の完了状態
-$dailyFullSyncStateFile = Join-Path $tempDir "last-full-sync-date.txt"
-$dailyFullSyncDate = Get-Date -Format "yyyy-MM-dd"
+$dailyFullSyncStateFile = Join-Path $tempDir 'last-full-sync-date.txt'
+$dailyFullSyncDate = Get-Date -Format 'yyyy-MM-dd'
 $isDailyFullSyncRequired = $true
 $expectedFileCount = $Config.FileNumberEnd - $Config.FileNumberStart + 1
 
+function Write-DailyFullSyncState {
+    param(
+        [string]$StateFile,
+        [string]$DateValue
+    )
+
+    $stateTempFile = "$StateFile.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $stateFileEncoding = [Text.UTF8Encoding]::new($false)
+        [IO.File]::WriteAllText($stateTempFile, $DateValue, $stateFileEncoding)
+        Move-Item -LiteralPath $stateTempFile -Destination $StateFile -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $stateTempFile) {
+            Remove-Item -LiteralPath $stateTempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Send-RunErrorNotification {
+    param(
+        [int]$ErrorCount,
+        [array]$ErrorDetails,
+        [string]$LogPath,
+        [hashtable]$Config
+    )
+
+    if ($ErrorCount -le 0) {
+        return
+    }
+
+    $emailParams = @{
+        Subject = '【エラー通知】Excelファイル処理でエラーが発生しました'
+        Body    = @"
+処理中に $ErrorCount 件のエラーが発生しました。
+
+エラー詳細:
+$($ErrorDetails -join "`n`n")
+
+ログファイル: $LogPath
+実行日時: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+"@
+        To      = $Config.Email.To
+        From    = $Config.Email.From
+    }
+
+    if ($Config.Email.TenantId -and $Config.Email.ClientId -and $Config.Email.ClientSecret) {
+        $emailParams['TenantId'] = $Config.Email.TenantId
+        $emailParams['ClientId'] = $Config.Email.ClientId
+        $emailParams['ClientSecret'] = $Config.Email.ClientSecret
+    }
+
+    try {
+        Send-ErrorEmail @emailParams -Verbose
+        Write-Log -Message 'エラーメール送信完了' -LogPath $LogPath -LogLevel 'INFO'
+    }
+    catch {
+        Write-Log -Message "メール送信エラー: $_" -LogPath $LogPath -LogLevel 'ERROR'
+        Write-Error "メール送信エラー: $_"
+    }
+}
+
 $scriptMutex = $null
 $hasMutex = $false
-
-# 二重起動防止（同時実行によるExcel競合を回避）
 try {
-    $scriptMutex = New-Object System.Threading.Mutex($false, "Global\smt-line-task-manager-crud-main")
+    $scriptMutex = New-Object System.Threading.Mutex($false, 'Global\smt-line-task-manager-crud-main')
     $hasMutex = $scriptMutex.WaitOne(0, $false)
 }
 catch {
@@ -105,77 +155,89 @@ catch {
 }
 
 if (-not $hasMutex) {
-    $duplicateRunMessage = "同一スクリプトが既に実行中のため、今回の実行をスキップしました。"
-    Write-Log -Message $duplicateRunMessage -LogPath $logPath -LogLevel "WARNING"
+    $duplicateRunMessage = '同一スクリプトが既に実行中のため、今回の実行をスキップしました。'
+    Write-Log -Message $duplicateRunMessage -LogPath $logPath -LogLevel 'WARNING'
     Write-Host $duplicateRunMessage
     exit 0
 }
 
 try {
-    try {
-        Test-ExcelComAvailability -Verbose
-    }
-    catch {
-        $precheckErrorMessage = "事前チェックエラー: Excel COMを初期化できません。$_"
-        Write-Log -Message $precheckErrorMessage -LogPath $logPath -LogLevel "ERROR"
-        throw $precheckErrorMessage
+    # Excelを触らず、現在のApp86だけを使って全予定を再計算する保守モード。
+    if ($RecalculateScheduleOnly) {
+        Write-Host 'App86の予定を全件再計算します...'
+        $scheduleResult = Invoke-App86ScheduleRecalculation `
+            -ApiUri $Config.Api.Uri `
+            -ApiHeaders $Config.Api.Headers `
+            -AppId $Config.AppId `
+            -LogPath $logPath `
+            -TimeoutSec $Config.Api.TimeoutSec
+
+        if (-not $scheduleResult.Success) {
+            throw ($scheduleResult.ErrorMessages -join "`n")
+        }
+
+        Write-Host "予定再計算完了（レコード: $($scheduleResult.UpdatedRecordCount) 件, 行: $($scheduleResult.UpdatedRowCount) 件）"
+        return
     }
 
-    # 本日の全件同期が完了済みか確認する
-    try {
-        if (Test-Path -LiteralPath $dailyFullSyncStateFile) {
-            $stateFileEncoding = [Text.UTF8Encoding]::new($false, $true)
-            $lastFullSyncDate = [IO.File]::ReadAllText($dailyFullSyncStateFile, $stateFileEncoding).Trim()
-            $isDailyFullSyncRequired = $lastFullSyncDate -ne $dailyFullSyncDate
+    Test-ExcelComAvailability -Verbose
+
+    if ($ForceFullSync) {
+        $isDailyFullSyncRequired = $true
+        $forceMessage = "強制全件同期として、対象の全 $expectedFileCount ファイルを処理します。"
+        Write-Log -Message $forceMessage -LogPath $logPath -LogLevel 'INFO'
+        Write-Host $forceMessage
+    }
+    else {
+        try {
+            if (Test-Path -LiteralPath $dailyFullSyncStateFile) {
+                $stateFileEncoding = [Text.UTF8Encoding]::new($false, $true)
+                $lastFullSyncDate = [IO.File]::ReadAllText($dailyFullSyncStateFile, $stateFileEncoding).Trim()
+                $isDailyFullSyncRequired = $lastFullSyncDate -ne $dailyFullSyncDate
+            }
+        }
+        catch {
+            $stateReadWarning = "日次全件同期の完了状態を読み込めないため、全ファイルを処理します: $_"
+            Write-Log -Message $stateReadWarning -LogPath $logPath -LogLevel 'WARNING'
+            Write-Warning $stateReadWarning
+            $isDailyFullSyncRequired = $true
+        }
+
+        if ($isDailyFullSyncRequired) {
+            $dailyMessage = "本日初回の全件同期として、対象の全 $expectedFileCount ファイルを処理します。"
+            Write-Log -Message $dailyMessage -LogPath $logPath -LogLevel 'INFO'
+            Write-Host $dailyMessage
         }
     }
-    catch {
-        $stateReadWarning = "日次全件同期の完了状態を読み込めないため、全ファイルを処理します: $_"
-        Write-Log -Message $stateReadWarning -LogPath $logPath -LogLevel "WARNING"
-        Write-Warning $stateReadWarning
-        $isDailyFullSyncRequired = $true
-    }
 
-    if ($isDailyFullSyncRequired) {
-        $dailyFullSyncMessage = "本日初回の全件同期として、対象の全 $expectedFileCount ファイルを処理します。"
-        Write-Log -Message $dailyFullSyncMessage -LogPath $logPath -LogLevel "INFO"
-        Write-Host $dailyFullSyncMessage
-    }
-
-    # ファイル番号のループ処理
     for ($i = $Config.FileNumberStart; $i -le $Config.FileNumberEnd; $i++) {
-        
+        $fileName = $Config.FileNamePattern -f $i
+        $fileNameXlsx = $Config.FileNamePatternXlsx -f $i
+        $xlsPath = Join-Path $Config.DataDirectory $fileName
+        $xlsxPath = Join-Path $xlsxDir $fileNameXlsx
+        $xlsPathTemp = $null
+
         try {
-            # ファイル名を生成
-            $fileName = $Config.FileNamePattern -f $i
-            $fileNameXlsx = $Config.FileNamePatternXlsx -f $i
-            $xlsPath = Join-Path $Config.DataDirectory $fileName
-            $tempFileName = "{0}_{1}.xls" -f [System.IO.Path]::GetFileNameWithoutExtension($fileName), ([System.Guid]::NewGuid().ToString("N"))
-            $xlsPathTemp = Join-Path $tempDir $tempFileName
-            $xlsxPath = Join-Path $xlsxDir $fileNameXlsx
-            
-            # ファイル存在確認
             if (-not (Test-Path $xlsPath)) {
-                $errorMessage = "ファイルが存在しません: $xlsPath"
-                Write-Log -Message $errorMessage -LogPath $logPath -LogLevel "WARNING"
-                $errorDetails += $errorMessage
+                $message = "ファイルが存在しません: $xlsPath"
+                Write-Log -Message $message -LogPath $logPath -LogLevel 'WARNING'
+                $errorDetails += $message
                 $errorCount++
                 continue
             }
-            
-            # タイムスタンプ検証: ファイルが更新されているかチェック
-            # パスを正規化して検索
+
             $normalizedXlsPath = [System.IO.Path]::GetFullPath($xlsPath)
             $savedTimestamp = $timestamps[$normalizedXlsPath]
-            
-            Write-Verbose "タイムスタンプ検証: ファイル=$normalizedXlsPath, 保存済みタイムスタンプ=$savedTimestamp"
-            
-            if ($isDailyFullSyncRequired) {
+
+            if ($ForceFullSync -or $isDailyFullSyncRequired) {
                 $isUpdated = $true
-                Write-Verbose "日次全件同期対象: $normalizedXlsPath"
             }
             else {
-                $isUpdated = Test-FileUpdated -FilePath $xlsPath -SavedTimestamp $savedTimestamp -Timestamps $timestamps -Verbose
+                $isUpdated = Test-FileUpdated `
+                    -FilePath $xlsPath `
+                    -SavedTimestamp $savedTimestamp `
+                    -Timestamps $timestamps `
+                    -Verbose
             }
 
             if (-not $isUpdated) {
@@ -183,47 +245,41 @@ try {
                 continue
             }
 
-            # 今回同期するファイルの更新日時を保持する
-            # 同期中に元ファイルが更新された場合、その更新を次回の処理対象に残す
             $timestampForSync = Get-FileTimestamp -FilePath $xlsPath
-            
-            
-            # ステップ1: DataDirectory → DataDirectoryTemp にコピー
-            Write-Host "  [1/4] DataDirectory → DataDirectoryTemp にコピー中..."
+            $tempFileName = "{0}_{1}.xls" -f `
+                [System.IO.Path]::GetFileNameWithoutExtension($fileName), `
+                ([System.Guid]::NewGuid().ToString('N'))
+            $xlsPathTemp = Join-Path $tempDir $tempFileName
+
+            Write-Host "  [1/4] $fileName を一時ディレクトリへコピー中..."
             Copy-Item -Path $xlsPath -Destination $xlsPathTemp -Force
-            
-            # ステップ2: DataDirectoryTemp → DataDirectoryXlsx に変換（.xls → .xlsx）
-            Write-Host "  [2/4] .xls → .xlsx 変換中..."
+
+            Write-Host '  [2/4] .xls → .xlsx 変換中...'
             $xlsxPath = Convert-XlsToXlsx -XlsPath $xlsPathTemp -XlsxPath $xlsxPath -Verbose
             if (Test-Path -LiteralPath $xlsPathTemp) {
                 Remove-Item -LiteralPath $xlsPathTemp -Force -ErrorAction SilentlyContinue
             }
-            
-            # ステップ3: Excelファイルを読み取り
-            Write-Host "  [3/4] Excelファイル読み取り中..."
+
+            Write-Host '  [3/4] Excelファイル読み取り中...'
             $excelData = Read-ExcelData -XlsxPath $xlsxPath -Verbose
-            
-            # 読み込んだデータを全データ配列に追加
             if ($excelData -and $excelData.Count -gt 0) {
                 $allExcelData += $excelData
-                Write-Verbose "データを追加しました（現在の総件数: $($allExcelData.Count)）"
             }
             else {
                 $warningMessage = "空シートを検出したため同期対象から除外します: $fileName"
-                Write-Log -Message $warningMessage -LogPath $logPath -LogLevel "WARNING"
-                Write-Host "  警告: $warningMessage"
+                Write-Log -Message $warningMessage -LogPath $logPath -LogLevel 'WARNING'
+                Write-Warning $warningMessage
             }
-            
+
             $processedCount++
             $processedFiles += $fileName
             $pendingTimestamps[$normalizedXlsPath] = $timestampForSync
-            
         }
         catch {
-            $errorMessage = "ファイル処理エラー ($fileName): $_"
-            Write-Log -Message $errorMessage -LogPath $logPath -LogLevel "ERROR"
-            Write-Error $errorMessage
-            $errorDetails += $errorMessage
+            $message = "ファイル処理エラー ($fileName): $_"
+            Write-Log -Message $message -LogPath $logPath -LogLevel 'ERROR'
+            Write-Error $message
+            $errorDetails += $message
             $errorCount++
             if ($xlsPathTemp -and (Test-Path -LiteralPath $xlsPathTemp)) {
                 Remove-Item -LiteralPath $xlsPathTemp -Force -ErrorAction SilentlyContinue
@@ -231,13 +287,22 @@ try {
             Start-Sleep -Milliseconds 300
         }
     }
-    
-    # ステップ4: データ同期処理（追加・更新）
+
     if ($allExcelData.Count -gt 0) {
         Write-Host "`n[4/4] データ同期処理開始（総件数: $($allExcelData.Count)）..."
 
         try {
-            # DataSyncManagerモジュールを使用してデータ同期を実行
+            # 同期前の旧日程も再計算対象へ含めるため、同期直前のApp86を保持する。
+            $beforeSyncRecords = @(Get-App86ScheduleRecords `
+                -ApiUri $Config.Api.Uri `
+                -ApiHeaders $Config.Api.Headers `
+                -AppId $Config.AppId `
+                -TimeoutSec $Config.Api.TimeoutSec)
+
+            $affectedGroups = @(Get-AffectedScheduleGroups `
+                -SourceData $allExcelData `
+                -TargetData $beforeSyncRecords)
+
             $syncResult = Sync-DataWithApi `
                 -SourceData $allExcelData `
                 -ApiUri $Config.Api.Uri `
@@ -246,159 +311,106 @@ try {
                 -LogPath $logPath `
                 -TimeoutSec $Config.Api.TimeoutSec
 
-            if ($syncResult.Success) {
-                # データ同期処理結果を保持
-                $syncAddedCount = $syncResult.AddedCount
-                $syncUpdatedCount = $syncResult.UpdatedCount
-
-                # kintone同期成功後にのみ、処理済みファイルのタイムスタンプを確定・保存
-                foreach ($processedFilePath in $pendingTimestamps.Keys) {
-                    $timestamps[$processedFilePath] = $pendingTimestamps[$processedFilePath]
-                    Write-Verbose "タイムスタンプを確定しました: $processedFilePath -> $($pendingTimestamps[$processedFilePath])"
-                }
-                Save-Timestamps -Timestamps $timestamps -TimestampFilePath $Config.TimestampFile -Verbose
-
-                # 対象ファイルをすべて処理できた場合だけ、本日の日次全件同期を完了扱いにする
-                if ($isDailyFullSyncRequired) {
-                    if ($processedCount -eq $expectedFileCount) {
-                        $stateTempFile = "$dailyFullSyncStateFile.$([Guid]::NewGuid().ToString('N')).tmp"
-                        try {
-                            $stateFileEncoding = [Text.UTF8Encoding]::new($false)
-                            [IO.File]::WriteAllText($stateTempFile, $dailyFullSyncDate, $stateFileEncoding)
-                            Move-Item -LiteralPath $stateTempFile -Destination $dailyFullSyncStateFile -Force
-                        }
-                        finally {
-                            if (Test-Path -LiteralPath $stateTempFile) {
-                                Remove-Item -LiteralPath $stateTempFile -Force -ErrorAction SilentlyContinue
-                            }
-                        }
-
-                        $dailyFullSyncCompletedMessage = "本日の日次全件同期が完了しました: $dailyFullSyncDate"
-                        Write-Log -Message $dailyFullSyncCompletedMessage -LogPath $logPath -LogLevel "INFO"
-                        Write-Host $dailyFullSyncCompletedMessage
-                    }
-                    else {
-                        $dailyFullSyncIncompleteMessage = "日次全件同期は未完了です（処理: $processedCount / $expectedFileCount ファイル）。次回も全ファイルを処理します。"
-                        Write-Log -Message $dailyFullSyncIncompleteMessage -LogPath $logPath -LogLevel "WARNING"
-                        Write-Warning $dailyFullSyncIncompleteMessage
-                    }
-                }
-            }
-            else {
+            if (-not $syncResult.Success) {
                 $errorCount += $syncResult.ErrorCount
                 $errorDetails += $syncResult.ErrorMessages
-                Write-Log -Message "データ同期処理でエラーが発生しました（エラー数: $($syncResult.ErrorCount)）" -LogPath $logPath -LogLevel "ERROR"
+                throw "データ同期処理に失敗しました。"
+            }
 
-                # エラー詳細を表示
-                if ($syncResult.ErrorMessages.Count -gt 0) {
-                    Write-Host "`n  エラー詳細:"
-                    foreach ($errorMsg in $syncResult.ErrorMessages) {
-                        Write-Host "    - $errorMsg"
-                        Write-Log -Message "エラー詳細: $errorMsg" -LogPath $logPath -LogLevel "ERROR"
-                    }
+            $syncAddedCount = $syncResult.AddedCount
+            $syncUpdatedCount = $syncResult.UpdatedCount
+
+            # Excel PUT後に再GETすることで、kintone Calc「生産時間」の最新値を使用する。
+            if ($ForceFullSync) {
+                $scheduleResult = Invoke-App86ScheduleRecalculation `
+                    -ApiUri $Config.Api.Uri `
+                    -ApiHeaders $Config.Api.Headers `
+                    -AppId $Config.AppId `
+                    -LogPath $logPath `
+                    -TimeoutSec $Config.Api.TimeoutSec
+            }
+            elseif ($affectedGroups.Count -gt 0) {
+                $scheduleResult = Invoke-App86ScheduleRecalculation `
+                    -ApiUri $Config.Api.Uri `
+                    -ApiHeaders $Config.Api.Headers `
+                    -AppId $Config.AppId `
+                    -LogPath $logPath `
+                    -TimeoutSec $Config.Api.TimeoutSec `
+                    -Groups $affectedGroups
+            }
+            else {
+                $scheduleResult = [PSCustomObject]@{
+                    Success            = $true
+                    UpdatedRecordCount = 0
+                    UpdatedRowCount    = 0
+                    ErrorMessages      = @()
                 }
+            }
 
-                # ロールバック対象がある場合はログに記録
-                if ($syncResult.RollbackTargets.Count -gt 0) {
-                    Write-Log -Message "ロールバック対象: $($syncResult.RollbackTargets.Count) 件" -LogPath $logPath -LogLevel "ERROR"
+            if (-not $scheduleResult.Success) {
+                $errorCount += [Math]::Max(1, $scheduleResult.ErrorMessages.Count)
+                $errorDetails += $scheduleResult.ErrorMessages
+                throw '予定再計算に失敗したため、ファイルタイムスタンプは確定しません。'
+            }
+
+            $scheduleUpdatedRecordCount = $scheduleResult.UpdatedRecordCount
+            $scheduleUpdatedRowCount = $scheduleResult.UpdatedRowCount
+
+            # Excel同期と予定再計算の両方が成功した場合だけ、ファイルタイムスタンプを確定する。
+            foreach ($processedFilePath in $pendingTimestamps.Keys) {
+                $timestamps[$processedFilePath] = $pendingTimestamps[$processedFilePath]
+            }
+            Save-Timestamps -Timestamps $timestamps -TimestampFilePath $Config.TimestampFile -Verbose
+
+            if ($isDailyFullSyncRequired) {
+                if ($processedCount -eq $expectedFileCount) {
+                    Write-DailyFullSyncState -StateFile $dailyFullSyncStateFile -DateValue $dailyFullSyncDate
+                    Write-Log `
+                        -Message "本日の日次全件同期が完了しました: $dailyFullSyncDate" `
+                        -LogPath $logPath `
+                        -LogLevel 'INFO'
+                }
+                else {
+                    $message = "日次全件同期は未完了です（処理: $processedCount / $expectedFileCount ファイル）。次回も全ファイルを処理します。"
+                    Write-Log -Message $message -LogPath $logPath -LogLevel 'WARNING'
+                    Write-Warning $message
                 }
             }
         }
         catch {
-            $syncError = "データ同期処理で例外が発生しました: $_"
-            Write-Log -Message $syncError -LogPath $logPath -LogLevel "ERROR"
+            $syncError = "同期・予定再計算処理でエラーが発生しました: $_"
+            Write-Log -Message $syncError -LogPath $logPath -LogLevel 'ERROR'
             Write-Error $syncError
             $errorDetails += $syncError
             $errorCount++
         }
     }
 
-    # 処理完了ログ（データ同期処理結果も含める）
-    $syncInfo = ""
+    $syncInfo = ''
     if ($allExcelData.Count -gt 0) {
-        $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件"
+        $syncInfo = ", 追加: $syncAddedCount 件, 更新: $syncUpdatedCount 件, 予定更新: $scheduleUpdatedRecordCount レコード / $scheduleUpdatedRowCount 行"
     }
+    $filesInfo = if ($processedFiles.Count -gt 0) { ", 更新ファイル: $($processedFiles -join ', ')" } else { '' }
 
-    $filesInfo = ""
-    if ($processedFiles.Count -gt 0) {
-        $filesInfo = ", 更新ファイル: $($processedFiles -join ', ')"
-    }
+    $completionMessage = "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）"
+    Write-Log -Message $completionMessage -LogPath $logPath -LogLevel 'INFO'
+    Write-Host $completionMessage
 
-    Write-Log -Message "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）" -LogPath $logPath -LogLevel "INFO"
-    Write-Host "全処理完了（処理: $processedCount 件, スキップ: $skippedCount 件, エラー: $errorCount 件, データ総件数: $($allExcelData.Count)$syncInfo$filesInfo）"
-
-    # エラーが発生した場合はメール送信
     if ($errorCount -gt 0) {
-        Write-Host "エラーが発生しました。メールを送信します..."
-
-        $emailSubject = "【エラー通知】Excelファイル処理でエラーが発生しました"
-        $emailBody = @"
-処理中に $errorCount 件のエラーが発生しました。
-
-エラー詳細:
-$($errorDetails -join "`n`n")
-
-ログファイル: $logPath
-実行日時: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-"@
-
-        try {
-            # Microsoft Graph PowerShellを使用してメール送信
-            $emailParams = @{
-                Subject = $emailSubject
-                Body    = $emailBody
-                To      = $Config.Email.To
-                From    = $Config.Email.From
-            }
-
-            # アプリケーション認証の設定がある場合は追加
-            if ($Config.Email.TenantId -and $Config.Email.ClientId -and $Config.Email.ClientSecret) {
-                $emailParams['TenantId'] = $Config.Email.TenantId
-                $emailParams['ClientId'] = $Config.Email.ClientId
-                $emailParams['ClientSecret'] = $Config.Email.ClientSecret
-            }
-
-            Send-ErrorEmail @emailParams -Verbose
-
-            Write-Log -Message "エラーメール送信完了" -LogPath $logPath -LogLevel "INFO"
-        }
-        catch {
-            $emailError = "メール送信エラー: $_"
-            Write-Log -Message $emailError -LogPath $logPath -LogLevel "ERROR"
-            Write-Error $emailError
-        }
+        Send-RunErrorNotification `
+            -ErrorCount $errorCount `
+            -ErrorDetails $errorDetails `
+            -LogPath $logPath `
+            -Config $Config
     }
     else {
-        Write-Host "全処理が正常に完了しました。"
+        Write-Host '全処理が正常に完了しました。'
     }
 }
 catch {
     $fatalError = "致命的なエラーが発生しました: $_"
-    Write-Log -Message $fatalError -LogPath $logPath -LogLevel "ERROR"
+    Write-Log -Message $fatalError -LogPath $logPath -LogLevel 'ERROR'
     Write-Error $fatalError
-    
-    # 致命的なエラーの場合もメール送信
-    try {
-        $emailParams = @{
-            Subject = "【致命的エラー】Excelファイル処理スクリプト"
-            Body    = $fatalError
-            To      = $Config.Email.To
-            From    = $Config.Email.From
-        }
-        
-        # アプリケーション認証の設定がある場合は追加
-        if ($Config.Email.TenantId -and $Config.Email.ClientId -and $Config.Email.ClientSecret) {
-            $emailParams['TenantId'] = $Config.Email.TenantId
-            $emailParams['ClientId'] = $Config.Email.ClientId
-            $emailParams['ClientSecret'] = $Config.Email.ClientSecret
-        }
-        
-        # Send-ErrorEmail @emailParams
-    }
-    catch {
-        Write-Error "メール送信も失敗しました: $_"
-    }
-    
     exit 1
 }
 finally {
