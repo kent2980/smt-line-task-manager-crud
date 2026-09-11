@@ -1,6 +1,25 @@
 ﻿# ExcelReader.psm1
 # Excelファイルを読み取るモジュール（テンプレート）
 
+function ConvertTo-SyncLotNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $normalized = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $null
+    }
+
+    return $normalized
+}
+
 function Read-ExcelData {
     <#
     .SYNOPSIS
@@ -91,12 +110,11 @@ function Read-ExcelData {
 
                 # lot_numberが空の行は異常データとして同期対象から除外する。
                 # line_lot_numberを「ライン名だけ」で生成して誤登録・誤更新しないため、ここで早期除外する。
-                $lotNumberText = if ($null -eq $lotNumber) { '' } else { ([string]$lotNumber).Trim() }
-                if ([string]::IsNullOrWhiteSpace($lotNumberText)) {
+                $lotNumber = ConvertTo-SyncLotNumber -Value $lotNumber
+                if ($null -eq $lotNumber) {
                     Write-Warning "lot_numberが空のため同期対象から除外します: file=$fileName, page=$page, row=$row"
                     continue
                 }
-                $lotNumber = $lotNumberText
 
                 $line_name = $fileName
                 $boradName = $excelPackage.Workbook.Worksheets[1].Cells["B$rowDown"].value
