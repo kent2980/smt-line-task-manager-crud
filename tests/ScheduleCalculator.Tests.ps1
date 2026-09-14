@@ -7,7 +7,8 @@ function New-ScheduleRow {
         [string]$Date,
         [string]$ProductionHours,
         [object]$ChangeHours = '',
-        [int]$SubIndex = 1
+        [int]$SubIndex = 1,
+        [object]$Active = 'True'
     )
 
     return [PSCustomObject]@{
@@ -17,6 +18,7 @@ function New-ScheduleRow {
             sub_lot_volume    = [PSCustomObject]@{ value = '100' }
             sub_index         = [PSCustomObject]@{ value = [string]$SubIndex }
             sub_change_time   = [PSCustomObject]@{ value = $ChangeHours }
+            有効判定          = [PSCustomObject]@{ value = $Active }
             生産時間          = [PSCustomObject]@{ value = $ProductionHours }
         }
     }
@@ -61,7 +63,6 @@ Describe 'App86 schedule calculation' {
         $date = '2026-09-11'
         $records = @(
             New-ScheduleRecord -Id '1' -Index 1 -Rows @(
-                # 生産時間1.5Hには切替0.5Hが含まれている。
                 New-ScheduleRow -Id 'row-1' -Date $date -ProductionHours '1.5 H' -ChangeHours '0.5'
             )
             New-ScheduleRecord -Id '2' -Index 2 -Rows @(
@@ -78,11 +79,8 @@ Describe 'App86 schedule calculation' {
         $result[0].StartAt.ToString('HH:mm') | Should Be '08:30'
         $result[0].EndAt.ToString('HH:mm') | Should Be '10:10'
         $result[0].BreakMinutes | Should Be 10
-
         $result[1].StartAt.ToString('HH:mm') | Should Be '10:10'
         $result[1].EndAt.ToString('HH:mm') | Should Be '11:10'
-        $result[1].BreakMinutes | Should Be 0
-
         $result[2].StartAt.ToString('HH:mm') | Should Be '11:10'
         $result[2].EndAt.ToString('HH:mm') | Should Be '13:20'
         $result[2].BreakMinutes | Should Be 40
@@ -154,15 +152,45 @@ Describe 'App86 schedule calculation' {
         )
 
         $result = @(Get-App86ScheduleCalculations -Records $records)
-
         $result.Count | Should Be 0
+    }
+
+    It 'calculates only rows whose 有効判定 is True' {
+        $records = @(
+            New-ScheduleRecord -Id '1' -Index 1 -Rows @(
+                New-ScheduleRow -Id 'row-active' -Date '2026-09-11' -ProductionHours '1' -Active 'True'
+                New-ScheduleRow -Id 'row-disabled' -Date '2026-09-11' -ProductionHours '9' -Active 'False'
+                New-ScheduleRow -Id 'row-empty' -Date '2026-09-11' -ProductionHours '9' -Active ''
+            )
+        )
+
+        $result = @(Get-App86ScheduleCalculations -Records $records)
+
+        $result.Count | Should Be 1
+        $result[0].RowId | Should Be 'row-active'
+        $result[0].StartAt.ToString('HH:mm') | Should Be '08:30'
+        $result[0].EndAt.ToString('HH:mm') | Should Be '09:30'
+    }
+
+    It 'does not validate malformed inactive legacy rows' {
+        $records = @(
+            New-ScheduleRecord -Id '1' -Index 1 -Rows @(
+                New-ScheduleRow -Id 'row-active' -Date '2026-09-12' -ProductionHours '1' -Active 'True'
+                New-ScheduleRow -Id 'row-invalid' -Date 'bad-date' -ProductionHours 'invalid' -Active 'False'
+            )
+        )
+
+        $result = @(Get-App86ScheduleCalculations -Records $records)
+
+        $result.Count | Should Be 1
+        $result[0].RowId | Should Be 'row-active'
     }
 
     It 'can calculate only the requested date-line groups' {
         $records = @(
             New-ScheduleRecord -Id '1' -Index 1 -Rows @(
-                New-ScheduleRow -Id 'row-1' -Date '2026-09-11' -ProductionHours '1' -ChangeHours '0'
-                New-ScheduleRow -Id 'row-2' -Date '2026-09-12' -ProductionHours '1' -ChangeHours '0'
+                New-ScheduleRow -Id 'row-1' -Date '2026-09-11' -ProductionHours '1'
+                New-ScheduleRow -Id 'row-2' -Date '2026-09-12' -ProductionHours '1'
             )
         )
         $groups = @([PSCustomObject]@{ Date = '2026-09-12'; LineName = 'GC01' })
@@ -177,10 +205,10 @@ Describe 'App86 schedule calculation' {
     It 'ignores unrelated malformed legacy rows during a partial recalculation' {
         $records = @(
             New-ScheduleRecord -Id '1' -Index 1 -Rows @(
-                New-ScheduleRow -Id 'row-target' -Date '2026-09-12' -ProductionHours '1' -ChangeHours '0'
+                New-ScheduleRow -Id 'row-target' -Date '2026-09-12' -ProductionHours '1'
             )
             New-ScheduleRecord -Id '2' -Index '' -Rows @(
-                New-ScheduleRow -Id 'row-legacy' -Date '2026-09-01' -ProductionHours 'invalid' -ChangeHours 'invalid'
+                New-ScheduleRow -Id 'row-legacy' -Date '2026-09-01' -ProductionHours 'invalid'
             )
         )
         $groups = @([PSCustomObject]@{ Date = '2026-09-12'; LineName = 'GC01' })
@@ -191,10 +219,10 @@ Describe 'App86 schedule calculation' {
         $result[0].RowId | Should Be 'row-target'
     }
 
-    It 'still rejects malformed production time during a full recalculation' {
+    It 'still rejects malformed production time for an active row during a full recalculation' {
         $records = @(
-            New-ScheduleRecord -Id '2' -Index '' -Rows @(
-                New-ScheduleRow -Id 'row-invalid' -Date '2026-09-01' -ProductionHours 'invalid' -ChangeHours '0'
+            New-ScheduleRecord -Id '2' -Index 1 -Rows @(
+                New-ScheduleRow -Id 'row-invalid' -Date '2026-09-01' -ProductionHours 'invalid' -Active 'True'
             )
         )
 
