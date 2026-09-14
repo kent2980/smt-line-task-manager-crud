@@ -49,47 +49,87 @@ function Get-SubScheduleChangeTime {
     return $ChangeTime
 }
 
+function Get-ExcelScheduleDateRange {
+    <#
+    .SYNOPSIS
+    Excelの予定日ヘッダー全体から同期対象の日付範囲を取得します。
+
+    .DESCRIPTION
+    各ページのI列～AE列にある日付ヘッダーを読み取り、最小日付～最大日付を返します。
+    予定台数が入っていない日も範囲に含めることで、Excelから予定が消えた日の既存予定を
+    kintone側で無効化できるようにします。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Worksheet,
+
+        [Parameter(Mandatory = $true)]
+        [int]$PageCount
+    )
+
+    $dates = @()
+    for ($page = 1; $page -le $PageCount; $page++) {
+        $scheduleDateRow = 8 + (($page - 1) * 62)
+        for ($column = 9; $column -le 31; $column++) {
+            $rawDate = $Worksheet.Cells[$scheduleDateRow, $column].value
+            if ($null -eq $rawDate -or [string]::IsNullOrWhiteSpace([string]$rawDate)) {
+                continue
+            }
+
+            $convertedDate = ConvertTo-DateString -DateValue $rawDate
+            $parsedDate = [DateTime]::MinValue
+            $isValidDate = [DateTime]::TryParseExact(
+                [string]$convertedDate,
+                'yyyy-MM-dd',
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::None,
+                [ref]$parsedDate
+            )
+            if (-not $isValidDate) {
+                throw "予定日ヘッダーの日付形式が不正です: page=$page, column=$column, value=$rawDate"
+            }
+
+            $dates += $parsedDate.Date
+        }
+    }
+
+    if ($dates.Count -eq 0) {
+        throw 'Excel予定日ヘッダーから有効な日付を取得できません。'
+    }
+
+    $sortedDates = @($dates | Sort-Object)
+    return [PSCustomObject]@{
+        Start = $sortedDates[0].ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+        End   = $sortedDates[$sortedDates.Count - 1].ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+}
+
 function Read-ExcelData {
     <#
     .SYNOPSIS
     Excelファイルを読み取ります。
-    
+
     .DESCRIPTION
     ImportExcelモジュールを使用してExcelファイルを読み込みます。
-    この関数はテンプレートです。実際の読み取り処理を実装してください。
-    
-    .PARAMETER XlsxPath
-    読み取る.xlsxファイルのパス
-    
-    .PARAMETER WorksheetName
-    ワークシート名（省略時は最初のシート）
-    
-    .EXAMPLE
-    $data = Read-ExcelData -XlsxPath "C:\data\file.xlsx"
-    
-    .EXAMPLE
-    $data = Read-ExcelData -XlsxPath "C:\data\file.xlsx" -WorksheetName "Sheet1"
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$XlsxPath,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$WorksheetName
     )
-    
-    # パス検証
+
     if (-not (Test-Path $XlsxPath)) {
         throw "ファイルが存在しません: $XlsxPath"
     }
-    
-    # ImportExcelモジュールの確認
+
     if (-not (Get-Module ImportExcel)) {
         Import-Module ImportExcel -ErrorAction Stop
     }
-    
-    # Utilsモジュールの確認（日付変換関数を使用するため）
+
     if (-not (Get-Module Utils)) {
         $scriptDirectory = Split-Path -Parent $PSScriptRoot
         $utilsPath = Join-Path $scriptDirectory "modules\Utils.psm1"
@@ -100,16 +140,13 @@ function Read-ExcelData {
             Write-Warning "Utilsモジュールが見つかりません。日付変換機能が使用できない可能性があります。"
         }
     }
-    
-    Write-Verbose "Excelファイルを読み込み中: $XlsxPath"
-    
-    try {
 
-        # XlsxPathから拡張子を抜いたファイル名を取得
+    Write-Verbose "Excelファイルを読み込み中: $XlsxPath"
+
+    try {
         $fileName = Split-Path -Leaf $XlsxPath
         $fileName = $fileName -replace '\.xlsx', ''
 
-        # Excelパッケージを開く
         if ($WorksheetName) {
             $excelPackage = Open-ExcelPackage -Path $XlsxPath -WorksheetName $WorksheetName
         }
@@ -117,62 +154,53 @@ function Read-ExcelData {
             $excelPackage = Open-ExcelPackage -Path $XlsxPath
         }
 
-        $pageCount = $excelPackage.Workbook.Worksheets[1].Cells["A53"].value
+        $worksheet = $excelPackage.Workbook.Worksheets[1]
+        $pageCount = $worksheet.Cells["A53"].value
+        $scheduleDateRange = Get-ExcelScheduleDateRange -Worksheet $worksheet -PageCount $pageCount
 
         $index = 1
         $startRow = 10
         $endRow = 53
-        $data = @()  # データ配列を初期化
+        $data = @()
 
         for ($page = 1; $page -le $pageCount; $page++) {
             $scheduleDateRow = 8 + (($page - 1) * 62)
             for ($row = $startRow; $row -le $endRow; $row += 2) {
-                # 2行ごとにデータを取得
                 $rowDown = $row + 1
-                $modelName = $excelPackage.Workbook.Worksheets[1].Cells["B$row"].value
-                $lotNumber = $excelPackage.Workbook.Worksheets[1].Cells["D$row"].value
+                $modelName = $worksheet.Cells["B$row"].value
+                $lotNumber = $worksheet.Cells["D$row"].value
 
-                # モデル名が空白の場合はスキップ
                 if ([string]::IsNullOrEmpty($modelName)) {
                     continue
                 }
 
-                # lot_numberが空の行は異常データとして同期対象から除外する。
-                # line_lot_numberを「ライン名だけ」で生成して誤登録・誤更新しないため、ここで早期除外する。
                 $lotNumber = ConvertTo-SyncLotNumber -Value $lotNumber
                 if ($null -eq $lotNumber) {
                     Write-Warning "lot_numberが空のため同期対象から除外します: file=$fileName, page=$page, row=$row"
                     continue
                 }
 
-                $line_name = $fileName
-                $boradName = $excelPackage.Workbook.Worksheets[1].Cells["B$rowDown"].value
-                $modelCode = $excelPackage.Workbook.Worksheets[1].Cells["D$rowDown"].value
-                # 日付を文字列として取得
-                $standardDateValue = $excelPackage.Workbook.Worksheets[1].Cells["F$row"].value
+                $lineName = $fileName
+                $boardName = $worksheet.Cells["B$rowDown"].value
+                $modelCode = $worksheet.Cells["D$rowDown"].value
+                $standardDateValue = $worksheet.Cells["F$row"].value
                 $standardDate = ConvertTo-DateString -DateValue $standardDateValue
-                $lotVolume = $excelPackage.Workbook.Worksheets[1].Cells["G$rowDown"].value
-                $tact = $excelPackage.Workbook.Worksheets[1].Cells["AK$row"].value
-                $utilizationRate = $excelPackage.Workbook.Worksheets[1].Cells["AL$row"].value
-                $hourProductionVolume = $excelPackage.Workbook.Worksheets[1].Cells["AL$rowDown"].value
-                # AP列の切替時間は、このExcel行から生成する日別予定の基本値として扱う。
-                # 同一行で日別台数セルが右隣へ連続する場合は、2日目以降の切替時間を0にする。
-                $changeTime = $excelPackage.Workbook.Worksheets[1].Cells["AP$row"].value
-                $boardDivision = $excelPackage.Workbook.Worksheets[1].Cells["AQ$row"].value
-                $inputQuantity = $excelPackage.Workbook.Worksheets[1].Cells["AQ$rowDown"].value
-                $tanaban = $excelPackage.Workbook.Worksheets[1].Cells["H$row"].value
-                
+                $lotVolume = $worksheet.Cells["G$rowDown"].value
+                $tact = $worksheet.Cells["AK$row"].value
+                $utilizationRate = $worksheet.Cells["AL$row"].value
+                $hourProductionVolume = $worksheet.Cells["AL$rowDown"].value
+                $changeTime = $worksheet.Cells["AP$row"].value
+                $boardDivision = $worksheet.Cells["AQ$row"].value
+                $inputQuantity = $worksheet.Cells["AQ$rowDown"].value
+                $tanaban = $worksheet.Cells["H$row"].value
+
                 $subSchedule = @()
                 $previousScheduledColumn = $null
-                # I列からAE列をループ処理
                 for ($column = 9; $column -le 31; $column++) {
-                    
-                    # 列番号を文字列に変換
-                    $dateStr = $excelPackage.Workbook.Worksheets[1].Cells[$scheduleDateRow, $column].value
-                    $convertedDate = ConvertTo-DateString -DateValue $dateStr
-                    $columnValue = $excelPackage.Workbook.Worksheets[1].Cells[$row, $column].value
-                    
-                    # 値が空白でない場合はサブスケジュールに追加
+                    $dateValue = $worksheet.Cells[$scheduleDateRow, $column].value
+                    $convertedDate = ConvertTo-DateString -DateValue $dateValue
+                    $columnValue = $worksheet.Cells[$row, $column].value
+
                     if (-not [string]::IsNullOrEmpty($columnValue)) {
                         $dailyChangeTime = Get-SubScheduleChangeTime `
                             -ChangeTime $changeTime `
@@ -184,28 +212,27 @@ function Read-ExcelData {
                             sub_lot_volume    = $columnValue
                             sub_index         = $index
                             sub_change_time   = $dailyChangeTime
+                            有効判定          = 'True'
                         }
 
                         $previousScheduledColumn = $column
                     }
                 }
 
-                # lot_numberが既に存在する場合は、sub_scheduleを既存のものに追加
-                # 追加行はそれぞれの取得元Excel行の日別sub_change_timeを保持する。
-                if ($data | Where-Object { $_.lot_number -eq $lotNumber }) {
-                    $data | Where-Object { $_.lot_number -eq $lotNumber } | ForEach-Object {
-                        $_.sub_schedule += $subSchedule
+                $existingRecords = @($data | Where-Object { $_.lot_number -eq $lotNumber })
+                if ($existingRecords.Count -gt 0) {
+                    foreach ($existingRecord in $existingRecords) {
+                        $existingRecord.sub_schedule += $subSchedule
                     }
                 }
                 else {
-                    # データをオブジェクトとして作成（単純な構造で返す）
                     $rowData = [PSCustomObject]@{
-                        line_lot_number        = $line_name + $lotNumber
+                        line_lot_number        = $lineName + $lotNumber
                         lot_number             = $lotNumber
-                        line_name              = $line_name
+                        line_name              = $lineName
                         index                  = $index
                         model_name             = $modelName
-                        board_name             = $boradName
+                        board_name             = $boardName
                         model_code             = $modelCode
                         standard_date          = $standardDate
                         lot_volume             = $lotVolume
@@ -217,27 +244,25 @@ function Read-ExcelData {
                         input_quantity         = $inputQuantity
                         tanaban                = $tanaban
                         sub_schedule           = $subSchedule
+                        sync_date_range_start  = $scheduleDateRange.Start
+                        sync_date_range_end    = $scheduleDateRange.End
                     }
-                
-                    # データ配列に追加
+
                     $data += $rowData
-            
                 }
-                # インデックスを更新
+
                 $index++
             }
             $startRow = $startRow + 62
             $endRow = 53 + $page * 62
         }
-        
-        Write-Verbose "Excelデータの読み込み完了（件数: $($data.Count)）"
 
+        Write-Verbose "Excelデータの読み込み完了（件数: $($data.Count), 日付範囲: $($scheduleDateRange.Start) ～ $($scheduleDateRange.End)）"
         return $data
     }
     catch {
-        throw "A12セルの値取得エラー: $_"
+        throw "Excelデータ読み取りエラー: $_"
     }
 }
 
-# モジュールをエクスポート
 Export-ModuleMember -Function Read-ExcelData
