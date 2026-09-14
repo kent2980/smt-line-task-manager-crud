@@ -1,5 +1,6 @@
-$modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'modules\DataSyncManager.psm1'
-Import-Module $modulePath -Force
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $repoRoot 'modules\JsonConverter.psm1') -Force
+Import-Module (Join-Path $repoRoot 'modules\DataSyncManager.psm1') -Force
 
 function Write-Log {
     param(
