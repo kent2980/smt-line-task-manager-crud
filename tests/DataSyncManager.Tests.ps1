@@ -146,12 +146,8 @@ Describe 'Compare-DataByLineLotNumber' {
     }
 
     It 'line_lot_numberの前後空白を除去して比較する' {
-        $sourceData = @(
-            New-SourceRecord -Key '  GC01002  ' -Rows @()
-        )
-        $targetData = @(
-            New-TargetRecord -Key 'GC01002' -Rows @()
-        )
+        $sourceData = @(New-SourceRecord -Key '  GC01002  ' -Rows @())
+        $targetData = @(New-TargetRecord -Key 'GC01002' -Rows @())
 
         $result = Compare-DataByLineLotNumber -SourceData $sourceData -TargetData $targetData -LogPath 'test.log'
 
@@ -193,15 +189,86 @@ Describe 'Compare-DataByLineLotNumber' {
 }
 
 InModuleScope DataSyncManager {
+    function New-ModuleSourceScheduleRow {
+        param(
+            [string]$Date,
+            [string]$Volume = '100'
+        )
+
+        [PSCustomObject]@{
+            sub_schedule_date = $Date
+            sub_lot_volume    = $Volume
+            sub_index         = '1'
+            sub_change_time   = '0.5'
+            有効判定          = 'True'
+        }
+    }
+
+    function New-ModuleSourceRecord {
+        param(
+            [string]$Key,
+            [array]$Rows = @()
+        )
+
+        [PSCustomObject]@{
+            line_lot_number       = $Key
+            line_name             = 'GC01'
+            lot_number            = $Key
+            index                 = 1
+            model_name            = 'MODEL'
+            standard_date         = '2026-09-14'
+            sub_schedule          = $Rows
+            sync_date_range_start = '2026-09-14'
+            sync_date_range_end   = '2026-10-06'
+        }
+    }
+
+    function New-ModuleTargetScheduleRow {
+        param(
+            [string]$Id,
+            [string]$Date,
+            [string]$Active = 'True'
+        )
+
+        [PSCustomObject]@{
+            id = $Id
+            value = [PSCustomObject]@{
+                sub_schedule_date = [PSCustomObject]@{ value = $Date }
+                sub_lot_volume    = [PSCustomObject]@{ value = '50' }
+                sub_index         = [PSCustomObject]@{ value = '9' }
+                sub_change_time   = [PSCustomObject]@{ value = '0' }
+                有効判定          = [PSCustomObject]@{ value = $Active }
+                予定開始日時      = [PSCustomObject]@{ value = '2026-09-14T00:00:00Z' }
+                予定終了日時      = [PSCustomObject]@{ value = '2026-09-14T01:00:00Z' }
+                休憩時間          = [PSCustomObject]@{ value = '0' }
+                生産時間          = [PSCustomObject]@{ value = '1' }
+            }
+        }
+    }
+
+    function New-ModuleTargetRecord {
+        param(
+            [string]$Key,
+            [array]$Rows = @()
+        )
+
+        [PSCustomObject]@{
+            line_lot_number = [PSCustomObject]@{ value = $Key }
+            line_name       = [PSCustomObject]@{ value = 'GC01' }
+            lot_number      = [PSCustomObject]@{ value = $Key }
+            sub_schedule    = [PSCustomObject]@{ value = $Rows }
+        }
+    }
+
     Describe 'sub_schedule履歴保持payload' {
         It '既存行を削除せず範囲内だけFalseにし新予定をTrueで末尾追加する' {
-            $source = New-SourceRecord -Key 'GC01001' -Rows @(
-                New-SourceScheduleRow -Date '2026-09-20' -Volume '120'
+            $source = New-ModuleSourceRecord -Key 'GC01001' -Rows @(
+                New-ModuleSourceScheduleRow -Date '2026-09-20' -Volume '120'
             )
-            $target = New-TargetRecord -Key 'GC01001' -Rows @(
-                New-TargetScheduleRow -Id 'row-before' -Date '2026-09-01' -Active 'True'
-                New-TargetScheduleRow -Id 'row-in-range' -Date '2026-09-20' -Active 'True'
-                New-TargetScheduleRow -Id 'row-history' -Date '2026-09-21' -Active 'False'
+            $target = New-ModuleTargetRecord -Key 'GC01001' -Rows @(
+                New-ModuleTargetScheduleRow -Id 'row-before' -Date '2026-09-01' -Active 'True'
+                New-ModuleTargetScheduleRow -Id 'row-in-range' -Date '2026-09-20' -Active 'True'
+                New-ModuleTargetScheduleRow -Id 'row-history' -Date '2026-09-21' -Active 'False'
             )
 
             $comparison = Compare-DataByLineLotNumber -SourceData @($source) -TargetData @($target) -LogPath 'test.log'
@@ -222,11 +289,11 @@ InModuleScope DataSyncManager {
         }
 
         It '日付範囲条件だけで選ばれたレコードはsub_schedule以外をPUTしない' {
-            $source = New-SourceRecord -Key 'GC01001' -Rows @(
-                New-SourceScheduleRow -Date '2026-09-20'
+            $source = New-ModuleSourceRecord -Key 'GC01001' -Rows @(
+                New-ModuleSourceScheduleRow -Date '2026-09-20'
             )
-            $target = New-TargetRecord -Key 'GC01999' -Rows @(
-                New-TargetScheduleRow -Id 'row-old' -Date '2026-09-20' -Active 'True'
+            $target = New-ModuleTargetRecord -Key 'GC01999' -Rows @(
+                New-ModuleTargetScheduleRow -Id 'row-old' -Date '2026-09-20' -Active 'True'
             )
 
             $comparison = Compare-DataByLineLotNumber -SourceData @($source) -TargetData @($target) -LogPath 'test.log'
@@ -241,8 +308,8 @@ InModuleScope DataSyncManager {
         }
 
         It '新規POST用の予定行はTrueにし同期メタデータはpayloadへ含めない' {
-            $source = New-SourceRecord -Key 'GC01001' -Rows @(
-                New-SourceScheduleRow -Date '2026-09-20'
+            $source = New-ModuleSourceRecord -Key 'GC01001' -Rows @(
+                New-ModuleSourceScheduleRow -Date '2026-09-20'
             )
 
             $payload = ConvertTo-AddRecordPayload -SourceItem $source
@@ -253,10 +320,10 @@ InModuleScope DataSyncManager {
         }
 
         It '既存行に行IDが無い場合は物理削除リスクを避けて失敗する' {
-            $source = New-SourceRecord -Key 'GC01001' -Rows @(
-                New-SourceScheduleRow -Date '2026-09-20'
+            $source = New-ModuleSourceRecord -Key 'GC01001' -Rows @(
+                New-ModuleSourceScheduleRow -Date '2026-09-20'
             )
-            $target = New-TargetRecord -Key 'GC01001' -Rows @(
+            $target = New-ModuleTargetRecord -Key 'GC01001' -Rows @(
                 [PSCustomObject]@{
                     value = [PSCustomObject]@{
                         sub_schedule_date = [PSCustomObject]@{ value = '2026-09-20' }
