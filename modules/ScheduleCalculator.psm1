@@ -37,6 +37,45 @@ function Get-FieldValue {
     return $value
 }
 
+function Test-ActiveScheduleRow {
+    <#
+    .SYNOPSIS
+    sub_schedule行が予定計算対象かを判定します。
+
+    .DESCRIPTION
+    有効判定が明示的にTrueの行だけを有効とします。
+    既存移行データの空欄やFalseは計算対象に含めません。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$RowValue
+    )
+
+    $activeValue = Get-FieldValue -Container $RowValue -FieldName '有効判定'
+    if ($activeValue -is [bool]) {
+        return [bool]$activeValue
+    }
+
+    if ($activeValue -is [System.Collections.IEnumerable] -and $activeValue -isnot [string]) {
+        foreach ($item in @($activeValue)) {
+            if ($item -is [bool] -and $item) {
+                return $true
+            }
+            if (([string]$item).Trim().Equals('True', [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    if ($null -eq $activeValue) {
+        return $false
+    }
+
+    return ([string]$activeValue).Trim().Equals('True', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function ConvertTo-HourValue {
     [CmdletBinding()]
     param(
@@ -182,7 +221,6 @@ function Add-WorkDurationWithBreaks {
             continue
         }
 
-        # 前工程の終了などで休憩内から始まる場合は、残りの休憩を先に消化する。
         if ($cursor -ge $breakStart -and $cursor -lt $breakEnd) {
             $delay = ($breakEnd - $cursor).TotalMinutes
             $breakMinutes += [int][Math]::Round($delay)
@@ -203,7 +241,6 @@ function Add-WorkDurationWithBreaks {
             }
 
             if ([Math]::Abs($remainingMinutes - $availableMinutes) -le $epsilon) {
-                # 名目終了が休憩開始と完全一致した場合も、その休憩を当該予定に含める。
                 $cursor = $breakEnd
                 $remainingMinutes = 0
                 $breakMinutes += [int][Math]::Round(($breakEnd - $breakStart).TotalMinutes)
@@ -232,7 +269,6 @@ function Get-GroupKey {
         [string]$LineName
     )
 
-    # 日付とライン名はいずれもApp86の管理値であり、区切りには通常値に含まれないパイプを使う。
     return "$Date|$LineName"
 }
 
@@ -266,12 +302,9 @@ function Get-App86ScheduleCalculations {
     App86レコードを日付×ラインでグループ化し、予定開始・終了・休憩時間を計算します。
 
     .DESCRIPTION
-    Groupsを省略した場合は全予定を厳密に検証して計算します。
-    Groupsを指定した場合は対象グループに含まれる行だけを厳密に検証し、無関係な過去データの不備で
-    通常同期の部分再計算が停止しないようにします。
-
-    生産時間Calcには切替時間が含まれているため、予定時刻の作業時間には生産時間のみを使用します。
-    sub_change_timeは同期・保持しますが、この計算では加算しません。
+    有効判定がTrueのsub_schedule行だけを計算対象にします。
+    Groupsを省略した場合は全有効予定を厳密に検証して計算します。
+    Groupsを指定した場合は対象グループに含まれる有効行だけを厳密に検証します。
     #>
     [CmdletBinding()]
     param(
@@ -316,8 +349,13 @@ function Get-App86ScheduleCalculations {
 
         foreach ($row in @($rows)) {
             $rowValue = $row.value
-            $date = [string](Get-FieldValue -Container $rowValue -FieldName 'sub_schedule_date')
 
+            if (-not (Test-ActiveScheduleRow -RowValue $rowValue)) {
+                $rowPosition++
+                continue
+            }
+
+            $date = [string](Get-FieldValue -Container $rowValue -FieldName 'sub_schedule_date')
             if ([string]::IsNullOrWhiteSpace($date)) {
                 if ($isPartialCalculation) {
                     $rowPosition++
@@ -333,7 +371,6 @@ function Get-App86ScheduleCalculations {
                 continue
             }
 
-            # ここからは実際の計算対象行なので、必要な識別子・値を厳密に検証する。
             if ([string]::IsNullOrWhiteSpace($recordId)) {
                 throw '予定計算対象レコードの$idを取得できません。'
             }

@@ -8,6 +8,7 @@ $script:WritableScheduleFields = @(
     'sub_lot_volume',
     'sub_index',
     'sub_change_time',
+    '有効判定',
     '予定開始日時',
     '予定終了日時',
     '休憩時間'
@@ -67,10 +68,93 @@ function Get-ScheduleGroupMapKey {
     return "$Date|$LineName"
 }
 
+function ConvertTo-ScheduleRangeDate {
+    param([object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+
+    $parsed = [DateTime]::MinValue
+    $isValid = [DateTime]::TryParseExact(
+        ([string]$Value).Trim(),
+        'yyyy-MM-dd',
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::None,
+        [ref]$parsed
+    )
+    if (-not $isValid) {
+        return $null
+    }
+
+    return $parsed.Date
+}
+
+function Get-SourceScheduleDateRanges {
+    param([array]$SourceData)
+
+    $rangesByKey = [ordered]@{}
+    foreach ($source in @($SourceData)) {
+        $startValue = Get-KintoneFieldValue -Container $source -FieldName 'sync_date_range_start'
+        $endValue = Get-KintoneFieldValue -Container $source -FieldName 'sync_date_range_end'
+        $start = ConvertTo-ScheduleRangeDate -Value $startValue
+        $end = ConvertTo-ScheduleRangeDate -Value $endValue
+
+        if ($null -eq $start -or $null -eq $end) {
+            $dates = @()
+            $rows = Get-KintoneFieldValue -Container $source -FieldName 'sub_schedule'
+            foreach ($row in @($rows)) {
+                $rowValue = if ($row.PSObject.Properties['value']) { $row.value } else { $row }
+                $date = ConvertTo-ScheduleRangeDate -Value (Get-KintoneFieldValue -Container $rowValue -FieldName 'sub_schedule_date')
+                if ($null -ne $date) {
+                    $dates += $date
+                }
+            }
+
+            if ($dates.Count -eq 0) {
+                continue
+            }
+
+            $sorted = @($dates | Sort-Object)
+            $start = $sorted[0]
+            $end = $sorted[$sorted.Count - 1]
+        }
+
+        if ($start -gt $end) {
+            continue
+        }
+
+        $key = '{0}|{1}' -f $start.ToString('yyyy-MM-dd'), $end.ToString('yyyy-MM-dd')
+        $rangesByKey[$key] = [PSCustomObject]@{ Start = $start; End = $end }
+    }
+
+    return @($rangesByKey.Values)
+}
+
+function Test-ScheduleDateInRanges {
+    param(
+        [object]$DateValue,
+        [array]$DateRanges
+    )
+
+    $date = ConvertTo-ScheduleRangeDate -Value $DateValue
+    if ($null -eq $date) {
+        return $false
+    }
+
+    foreach ($range in @($DateRanges)) {
+        if ($date -ge $range.Start -and $date -le $range.End) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Get-App86ScheduleRecords {
     <#
     .SYNOPSIS
-    App86の有効な生産レコードをindex、$id順で取得します。
+    App86の生産レコードをindex、$id順で取得します。
 
     .DESCRIPTION
     lot_numberが空のレコードは異常データとして予定再計算対象から除外します。
@@ -134,9 +218,7 @@ function Get-App86ScheduleRecords {
 }
 
 function Get-SourceScheduleGroups {
-    param(
-        [object]$Item
-    )
+    param([object]$Item)
 
     $groups = @()
     $lineName = [string](Get-KintoneFieldValue -Container $Item -FieldName 'line_name')
@@ -162,7 +244,7 @@ function Get-SourceScheduleGroups {
 function Get-AffectedScheduleGroups {
     <#
     .SYNOPSIS
-    今回同期される更新元と同期前App86から、再計算が必要な日付×ラインを抽出します。
+    今回追加する新予定と、Excel日付範囲内で無効化される既存予定から再計算対象を抽出します。
     #>
     [CmdletBinding()]
     param(
@@ -175,27 +257,43 @@ function Get-AffectedScheduleGroups {
         [array]$TargetData
     )
 
-    $targetByKey = @{}
-    foreach ($target in $TargetData) {
-        $targetKey = [string](Get-KintoneFieldValue -Container $target -FieldName 'line_lot_number')
-        if (-not [string]::IsNullOrWhiteSpace($targetKey)) {
-            $targetByKey[$targetKey.Trim()] = $target
-        }
-    }
-
     $groupMap = [ordered]@{}
-    foreach ($source in $SourceData) {
-        $sourceKey = [string](Get-KintoneFieldValue -Container $source -FieldName 'line_lot_number')
 
+    foreach ($source in $SourceData) {
         foreach ($group in @(Get-SourceScheduleGroups -Item $source)) {
             $mapKey = Get-ScheduleGroupMapKey -Date $group.Date -LineName $group.LineName
             $groupMap[$mapKey] = $group
         }
+    }
 
-        # 同一レコードの日程再割り付けで旧日付から予定が消える場合、その旧グループも再計算する。
-        if (-not [string]::IsNullOrWhiteSpace($sourceKey) -and $targetByKey.ContainsKey($sourceKey.Trim())) {
-            foreach ($group in @(Get-SourceScheduleGroups -Item $targetByKey[$sourceKey.Trim()])) {
-                $mapKey = Get-ScheduleGroupMapKey -Date $group.Date -LineName $group.LineName
+    # 更新対象条件と同じ日付範囲で、kintone側の既存予定を影響グループへ追加する。
+    $dateRanges = @(Get-SourceScheduleDateRanges -SourceData $SourceData)
+    if ($dateRanges.Count -gt 0) {
+        foreach ($target in $TargetData) {
+            $lineName = [string](Get-KintoneFieldValue -Container $target -FieldName 'line_name')
+            if ([string]::IsNullOrWhiteSpace($lineName)) {
+                continue
+            }
+            $lineName = $lineName.Trim()
+
+            $rows = Get-KintoneFieldValue -Container $target -FieldName 'sub_schedule'
+            foreach ($row in @($rows)) {
+                $rowValue = if ($row.PSObject.Properties['value']) { $row.value } else { $row }
+                $date = [string](Get-KintoneFieldValue -Container $rowValue -FieldName 'sub_schedule_date')
+                if ([string]::IsNullOrWhiteSpace($date)) {
+                    continue
+                }
+
+                $date = $date.Trim()
+                if (-not (Test-ScheduleDateInRanges -DateValue $date -DateRanges $dateRanges)) {
+                    continue
+                }
+
+                $group = [PSCustomObject]@{
+                    Date     = $date
+                    LineName = $lineName
+                }
+                $mapKey = Get-ScheduleGroupMapKey -Date $date -LineName $lineName
                 $groupMap[$mapKey] = $group
             }
         }
@@ -282,7 +380,7 @@ function ConvertTo-ScheduleUpdateRecords {
                 }
             }
 
-            # テーブル全体をPUTするため、計算対象外の行もrow IDと現在値を含めて保持する。
+            # 計算対象外（False）の行もrow IDと現在値を含めて保持し、履歴を削除・上書きしない。
             $payloadRows += [PSCustomObject]@{
                 id    = $rowId
                 value = [PSCustomObject]$rowPayloadValue
@@ -312,9 +410,6 @@ function Invoke-App86ScheduleRecalculation {
     <#
     .SYNOPSIS
     App86の最新Calc値を再取得して予定開始日時・予定終了日時・休憩時間を更新します。
-
-    .DESCRIPTION
-    Groupsを省略した場合は全日付×全ラインを再計算します。
     #>
     [CmdletBinding()]
     param(
@@ -354,9 +449,7 @@ function Invoke-App86ScheduleRecalculation {
             -TimeoutSec $TimeoutSec `
             -BatchSize $script:ScheduleFetchBatchSize
 
-        $calculatorParams = @{
-            Records = $records
-        }
+        $calculatorParams = @{ Records = $records }
         if ($null -ne $Groups -and $Groups.Count -gt 0) {
             $calculatorParams['Groups'] = $Groups
         }

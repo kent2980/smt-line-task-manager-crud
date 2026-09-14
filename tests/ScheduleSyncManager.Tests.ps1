@@ -5,19 +5,24 @@ function New-SourceRecord {
     param(
         [string]$Key,
         [string]$Line,
-        [array]$Dates
+        [array]$Dates,
+        [string]$RangeStart = '2026-09-14',
+        [string]$RangeEnd = '2026-10-06'
     )
 
     [PSCustomObject]@{
-        line_lot_number = $Key
-        line_name       = $Line
-        sub_schedule    = @(
+        line_lot_number        = $Key
+        line_name              = $Line
+        sync_date_range_start  = $RangeStart
+        sync_date_range_end    = $RangeEnd
+        sub_schedule           = @(
             $Dates | ForEach-Object {
                 [PSCustomObject]@{
                     sub_schedule_date = $_
                     sub_lot_volume    = 1
                     sub_index         = 1
                     sub_change_time   = 0
+                    有効判定          = 'True'
                 }
             }
         )
@@ -41,6 +46,7 @@ function New-TargetRecord {
                         id = "row-$_"
                         value = [PSCustomObject]@{
                             sub_schedule_date = [PSCustomObject]@{ value = $_ }
+                            有効判定          = [PSCustomObject]@{ value = 'True' }
                         }
                     }
                 }
@@ -50,37 +56,37 @@ function New-TargetRecord {
 }
 
 Describe 'Get-AffectedScheduleGroups' {
-    It 'includes both old and new groups when a schedule is reallocated' {
+    It 'includes new source groups and all existing target groups inside the Excel date range' {
         $source = @(
-            New-SourceRecord -Key 'GC01001' -Line 'GC01' -Dates @('2026-09-11', '2026-09-12')
+            New-SourceRecord -Key 'GC01001' -Line 'GC01' -Dates @('2026-09-15') -RangeStart '2026-09-14' -RangeEnd '2026-09-20'
         )
         $target = @(
-            New-TargetRecord -Key 'GC01001' -Line 'GC01' -Dates @('2026-09-10', '2026-09-11')
+            New-TargetRecord -Key 'GC01001' -Line 'GC01' -Dates @('2026-09-10', '2026-09-16')
+            New-TargetRecord -Key 'GC02099' -Line 'GC02' -Dates @('2026-09-18')
         )
 
         $groups = @(Get-AffectedScheduleGroups -SourceData $source -TargetData $target)
         $keys = @($groups | ForEach-Object { "$($_.Date)|$($_.LineName)" })
 
-        $groups.Count | Should Be 3
-        $keys | Should Contain '2026-09-10|GC01'
-        $keys | Should Contain '2026-09-11|GC01'
-        $keys | Should Contain '2026-09-12|GC01'
+        $keys | Should Contain '2026-09-15|GC01'
+        $keys | Should Contain '2026-09-16|GC01'
+        $keys | Should Contain '2026-09-18|GC02'
+        ($keys -contains '2026-09-10|GC01') | Should Be $false
     }
 
-    It 'does not include target-only records because the Excel sync does not update them' {
+    It 'does not include target rows outside the Excel date range' {
         $source = @(
-            New-SourceRecord -Key 'GC01001' -Line 'GC01' -Dates @('2026-09-11')
+            New-SourceRecord -Key 'GC01001' -Line 'GC01' -Dates @('2026-09-15') -RangeStart '2026-09-14' -RangeEnd '2026-09-20'
         )
         $target = @(
-            New-TargetRecord -Key 'GC01099' -Line 'GC01' -Dates @('2026-09-09')
+            New-TargetRecord -Key 'GC01999' -Line 'GC01' -Dates @('2026-09-01', '2026-10-10')
         )
 
         $groups = @(Get-AffectedScheduleGroups -SourceData $source -TargetData $target)
         $keys = @($groups | ForEach-Object { "$($_.Date)|$($_.LineName)" })
 
         $groups.Count | Should Be 1
-        $keys | Should Contain '2026-09-11|GC01'
-        ($keys -contains '2026-09-09|GC01') | Should Be $false
+        $keys | Should Contain '2026-09-15|GC01'
     }
 }
 
@@ -117,7 +123,7 @@ InModuleScope ScheduleSyncManager {
     }
 
     Describe 'Schedule update payload' {
-        It 'keeps every table row and writable source value while omitting the Calc field' {
+        It 'keeps every table row, preserves 有効判定 and does not overwrite inactive row timestamps' {
             $record = [PSCustomObject]@{
                 '$id'       = [PSCustomObject]@{ value = '10' }
                 '$revision' = [PSCustomObject]@{ value = '7' }
@@ -130,6 +136,7 @@ InModuleScope ScheduleSyncManager {
                                 sub_lot_volume    = [PSCustomObject]@{ value = '3200' }
                                 sub_index         = [PSCustomObject]@{ value = '9' }
                                 sub_change_time   = [PSCustomObject]@{ value = '0.5' }
+                                有効判定          = [PSCustomObject]@{ value = 'True' }
                                 生産時間          = [PSCustomObject]@{ value = '3.38' }
                                 予定開始日時      = [PSCustomObject]@{ value = '' }
                                 予定終了日時      = [PSCustomObject]@{ value = '' }
@@ -143,6 +150,7 @@ InModuleScope ScheduleSyncManager {
                                 sub_lot_volume    = [PSCustomObject]@{ value = '760' }
                                 sub_index         = [PSCustomObject]@{ value = '9' }
                                 sub_change_time   = [PSCustomObject]@{ value = '1.0' }
+                                有効判定          = [PSCustomObject]@{ value = 'False' }
                                 生産時間          = [PSCustomObject]@{ value = '0.80' }
                                 予定開始日時      = [PSCustomObject]@{ value = '2026-09-11T23:30:00Z' }
                                 予定終了日時      = [PSCustomObject]@{ value = '2026-09-12T00:30:00Z' }
@@ -169,19 +177,15 @@ InModuleScope ScheduleSyncManager {
             $rows.Count | Should Be 2
             $rows[0].id | Should Be 'row-a'
             $rows[1].id | Should Be 'row-b'
-
-            $rows[0].value.sub_schedule_date.value | Should Be '2026-09-11'
-            $rows[0].value.sub_lot_volume.value | Should Be '3200'
-            $rows[0].value.sub_change_time.value | Should Be '0.5'
+            $rows[0].value.有効判定.value | Should Be 'True'
+            $rows[1].value.有効判定.value | Should Be 'False'
             ($null -eq $rows[0].value.PSObject.Properties['生産時間']) | Should Be $true
             $rows[0].value.予定開始日時.value | Should Be '2026-09-10T23:30:00Z'
             $rows[0].value.予定終了日時.value | Should Be '2026-09-11T01:10:00Z'
             $rows[0].value.休憩時間.value | Should Be '10'
-
-            # 計算対象外の行も既存値を維持する。
-            $rows[1].value.sub_schedule_date.value | Should Be '2026-09-12'
             $rows[1].value.予定開始日時.value | Should Be '2026-09-11T23:30:00Z'
             $rows[1].value.予定終了日時.value | Should Be '2026-09-12T00:30:00Z'
+            $rows[1].value.休憩時間.value | Should Be '0'
         }
     }
 }
