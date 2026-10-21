@@ -762,12 +762,10 @@ function Invoke-AddData {
 
     try {
         $payloadRecords = @($DataToAdd | ForEach-Object { ConvertTo-AddRecordPayload -SourceItem $_ })
-        $totalBatches = [Math]::Ceiling($payloadRecords.Count / $BatchSize)
+        $batches = @(Split-KintoneRecordBatches -Records $payloadRecords -AppId $AppId -MaxRecords $BatchSize)
 
-        for ($batchIndex = 0; $batchIndex -lt $totalBatches; $batchIndex++) {
-            $startIndex = $batchIndex * $BatchSize
-            $endIndex = [Math]::Min($startIndex + $BatchSize - 1, $payloadRecords.Count - 1)
-            $batchData = @($payloadRecords[$startIndex..$endIndex])
+        for ($batchIndex = 0; $batchIndex -lt $batches.Count; $batchIndex++) {
+            $batchData = @($batches[$batchIndex])
             $batchNumber = $batchIndex + 1
 
             try {
@@ -785,7 +783,8 @@ function Invoke-AddData {
                     -Verbose | Out-Null
 
                 $result.ProcessedCount += $batchData.Count
-                $result.ProcessedData += @($DataToAdd[$startIndex..$endIndex])
+                $processedKeys = @($batchData | ForEach-Object { Get-LineLotNumberValue -Item $_ })
+                $result.ProcessedData += @($DataToAdd | Where-Object { $processedKeys -contains (Get-LineLotNumberValue -Item $_) })
             }
             catch {
                 $errorMsg = "追加処理 バッチ $batchNumber エラー: $_"
@@ -854,11 +853,9 @@ function Invoke-UpdateData {
             return $result
         }
 
-        $totalBatches = [Math]::Ceiling($updateRecords.Count / $BatchSize)
-        for ($batchIndex = 0; $batchIndex -lt $totalBatches; $batchIndex++) {
-            $startIndex = $batchIndex * $BatchSize
-            $endIndex = [Math]::Min($startIndex + $BatchSize - 1, $updateRecords.Count - 1)
-            $batchData = @($updateRecords[$startIndex..$endIndex])
+        $batches = @(Split-KintoneRecordBatches -Records $updateRecords -AppId $AppId -MaxRecords $BatchSize)
+        for ($batchIndex = 0; $batchIndex -lt $batches.Count; $batchIndex++) {
+            $batchData = @($batches[$batchIndex])
             $batchNumber = $batchIndex + 1
 
             try {
@@ -876,7 +873,8 @@ function Invoke-UpdateData {
                     -Verbose | Out-Null
 
                 $result.ProcessedCount += $batchData.Count
-                $result.ProcessedData += @($DataToUpdate[$startIndex..$endIndex])
+                $processedKeys = @($batchData | ForEach-Object { [string]$_.updateKey.value })
+                $result.ProcessedData += @($DataToUpdate | Where-Object { $processedKeys -contains [string]$_.Key })
             }
             catch {
                 $errorMsg = "更新処理 バッチ $batchNumber エラー: $_"

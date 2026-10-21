@@ -222,6 +222,117 @@ function Get-ApiData {
     }
 }
 
+
+function Split-KintoneRecordBatches {
+    <#
+    .SYNOPSIS
+    kintone APIへ送信するレコードをリクエストサイズ上限内のバッチへ分割します。
+
+    .DESCRIPTION
+    レコード件数と、app・recordsを含む実際のJSONをUTF-8へ変換した
+    バイトサイズの両方を確認し、各APIリクエストが指定上限を
+    超えないようレコード配列を分割します。
+
+    1レコードだけでサイズ上限を超える場合は、それ以上分割できないため
+    API送信前に例外を送出します。この関数自体はAPI通信を行いません。
+
+    .PARAMETER Records
+    kintoneへ送信するレコードの一覧。
+
+    .PARAMETER AppId
+    送信先kintoneアプリID。
+
+    .PARAMETER MaxRecords
+    1リクエストあたりの最大レコード件数。既定値は100件です。
+
+    .PARAMETER MaxBodyBytes
+    1リクエストあたりの最大JSON UTF-8バイト数。既定値は45MBです。
+
+    .OUTPUTS
+    各APIリクエストに使用するレコード配列の一覧。
+
+    .EXAMPLE
+    $batches = @(Split-KintoneRecordBatches -Records $records -AppId 86)
+    foreach ($batch in $batches) {
+        # $batch を records としてAPIへ送信する
+    }
+
+    .NOTES
+    JSONサイズはConvertTo-Json -Depth 20で生成した実際のリクエスト本文を
+    UTF-8へ変換したバイト数で判定します。
+
+    .THROWS
+    MaxRecordsまたはMaxBodyBytesが1未満の場合。
+    1レコードだけでMaxBodyBytesを超過する場合。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [array]$Records,
+
+        [Parameter(Mandatory = $true)]
+        [int]$AppId,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRecords = 100,
+
+        [Parameter(Mandatory = $false)]
+        [long]$MaxBodyBytes = 45MB
+    )
+
+    if ($MaxRecords -lt 1) {
+        throw 'MaxRecordsは1以上を指定してください。'
+    }
+    if ($MaxBodyBytes -lt 1) {
+        throw 'MaxBodyBytesは1以上を指定してください。'
+    }
+    if ($null -eq $Records -or $Records.Count -eq 0) {
+        return
+    }
+
+    $batches = [System.Collections.ArrayList]::new()
+    $currentBatch = [System.Collections.ArrayList]::new()
+
+    foreach ($record in $Records) {
+        $candidate = @($currentBatch.ToArray()) + @($record)
+        $candidateJson = @{
+            app     = $AppId
+            records = $candidate
+        } | ConvertTo-Json -Depth 20
+        $candidateBytes = [System.Text.Encoding]::UTF8.GetByteCount($candidateJson)
+
+        if ($candidate.Count -le $MaxRecords -and $candidateBytes -le $MaxBodyBytes) {
+            [void]$currentBatch.Add($record)
+            continue
+        }
+
+        if ($currentBatch.Count -gt 0) {
+            [void]$batches.Add(@($currentBatch.ToArray()))
+            $currentBatch.Clear()
+        }
+
+        $singleJson = @{
+            app     = $AppId
+            records = @($record)
+        } | ConvertTo-Json -Depth 20
+        $singleBytes = [System.Text.Encoding]::UTF8.GetByteCount($singleJson)
+        if ($singleBytes -gt $MaxBodyBytes) {
+            throw ("kintone API送信対象の1レコードがサイズ上限を超えています。requestSize={0} bytes, maxBodyBytes={1} bytes" -f $singleBytes, $MaxBodyBytes)
+        }
+
+        [void]$currentBatch.Add($record)
+    }
+
+    if ($currentBatch.Count -gt 0) {
+        [void]$batches.Add(@($currentBatch.ToArray()))
+    }
+
+    foreach ($batch in $batches) {
+        Write-Output -NoEnumerate $batch
+    }
+}
+
 # モジュールをエクスポート
-Export-ModuleMember -Function Send-ApiRequest, Get-ApiData
+Export-ModuleMember -Function Send-ApiRequest, Get-ApiData, Split-KintoneRecordBatches
 

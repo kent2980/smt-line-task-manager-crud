@@ -464,9 +464,9 @@ function Invoke-App86ScheduleRecalculation {
         }
 
         $updates = @(ConvertTo-ScheduleUpdateRecords -Records $records -Calculations $calculations)
-        for ($index = 0; $index -lt $updates.Count; $index += $script:ScheduleUpdateBatchSize) {
-            $endIndex = [Math]::Min($index + $script:ScheduleUpdateBatchSize - 1, $updates.Count - 1)
-            $batch = @($updates[$index..$endIndex])
+        $batches = @(Split-KintoneRecordBatches -Records $updates -AppId $AppId -MaxRecords $script:ScheduleUpdateBatchSize)
+        foreach ($batchItem in $batches) {
+            $batch = @($batchItem)
             $body = @{
                 app     = $AppId
                 records = $batch
