@@ -56,12 +56,26 @@ Describe 'Split-KintoneRecordBatches' {
             }
         }
 
-        { Split-KintoneRecordBatches -Records @($record) -AppId 86 -MaxBodyBytes 100 } |
-            Should Throw '*1レコードがサイズ上限を超えています*'
+        $message = $null
+        try {
+            Split-KintoneRecordBatches -Records @($record) -AppId 86 -MaxBodyBytes 100
+        }
+        catch {
+            $message = $_.Exception.Message
+        }
+
+        $message | Should Match '1レコードがサイズ上限を超えています'
     }
 
     It '不正なサイズ上限はエラーにする' {
-        { Split-KintoneRecordBatches -Records @([PSCustomObject]@{ id = 1 }) -AppId 86 -MaxBodyBytes 0 } |
-            Should Throw '*MaxBodyBytesは1以上*'
+        $message = $null
+        try {
+            Split-KintoneRecordBatches -Records @([PSCustomObject]@{ id = 1 }) -AppId 86 -MaxBodyBytes 0
+        }
+        catch {
+            $message = $_.Exception.Message
+        }
+
+        $message | Should Match 'MaxBodyBytesは1以上'
     }
 }
