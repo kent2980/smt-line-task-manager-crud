@@ -196,6 +196,13 @@ function Read-ExcelData {
 
                 $subSchedule = @()
                 $previousScheduledColumn = $null
+
+                # $boardNaameが空の場合は、スキップする
+                if ([string]::IsNullOrEmpty($boardName)) {
+                    Write-Warning "board_nameが空のため同期対象から除外します: file=$fileName, page=$page, row=$row"
+                    continue
+                }
+
                 for ($column = 9; $column -le 31; $column++) {
                     $dateValue = $worksheet.Cells[$scheduleDateRow, $column].value
                     $convertedDate = ConvertTo-DateString -DateValue $dateValue

@@ -211,6 +211,13 @@ try {
     }
 
     for ($i = $Config.FileNumberStart; $i -le $Config.FileNumberEnd; $i++) {
+
+        # $iが8の場合は、処理対象外のためスキップする
+        if ($Config.FileNumberSkip -contains $i) {
+            Write-Host "  [スキップ] ファイル番号 $i は処理対象外のためスキップします。"
+            continue
+        }
+
         $fileName = $Config.FileNamePattern -f $i
         $fileNameXlsx = $Config.FileNamePatternXlsx -f $i
         $xlsPath = Join-Path $Config.DataDirectory $fileName
@@ -377,13 +384,20 @@ try {
                 }
             }
         }
-        catch {
-            $syncError = "同期・予定再計算処理でエラーが発生しました: $_"
-            Write-Log -Message $syncError -LogPath $logPath -LogLevel 'ERROR'
-            Write-Error $syncError
-            $errorDetails += $syncError
-            $errorCount++
-        }
+catch {
+    $errorMessage = "API送信エラー: $_"
+
+    if ($_.ErrorDetails.Message) {
+        $errorMessage += "`nkintone応答: $($_.ErrorDetails.Message)"
+    }
+
+    if ($_.Exception.Response) {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+        $errorMessage += "`nHTTPステータス: $statusCode"
+    }
+
+    throw $errorMessage
+}
     }
 
     $syncInfo = ''

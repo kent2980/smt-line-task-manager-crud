@@ -70,6 +70,7 @@ $Config = @{
     # 処理するファイル番号の範囲
     FileNumberStart     = 1
     FileNumberEnd       = 9
+    FileNumberSkip      = @(8)  # 処理対象外のファイル番号
 
     # API設定（キントーン）
     # .envファイルから読み込む（必須）
